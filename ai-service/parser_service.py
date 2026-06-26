@@ -160,6 +160,7 @@ def fallback_analyze(transactions: list) -> dict:
 class ParserService:
     def __init__(self):
         self.api_key = os.getenv("GEMINI_API_KEY")
+        self.model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
         self.is_configured = False
         
         if self.api_key and self.api_key != "YOUR_GEMINI_API_KEY_HERE":
@@ -194,7 +195,7 @@ Return a JSON object containing:
 
 Return ONLY a JSON object. Do not wrap in markdown tags like ```json.
 """
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            model = genai.GenerativeModel(self.model_name)
             response = model.generate_content(
                 prompt,
                 generation_config=genai.types.GenerationConfig(
@@ -255,7 +256,7 @@ Return a JSON object conforming exactly to this structure:
 
 Return ONLY the JSON object. Do not wrap in markdown tags.
 """
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            model = genai.GenerativeModel(self.model_name)
             response = model.generate_content(
                 prompt,
                 generation_config=genai.types.GenerationConfig(

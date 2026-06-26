@@ -21,3 +21,15 @@ type ReportRepository interface {
 	Create(report *models.Report) error
 	GetByUserID(userID string) ([]*models.Report, error)
 }
+
+type CategoryBudgetRepository interface {
+	SetLimit(userID string, category string, amount int64) error
+	GetLimits(userID string) (map[string]int64, error)
+	GetLimit(userID string, category string) (int64, error)
+}
+
+type ChatMemoryRepository interface {
+	Append(userID string, role string, content string) error
+	GetLastN(userID string, n int) ([]*models.ChatMessage, error)
+}
+

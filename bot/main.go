@@ -14,6 +14,7 @@ import (
 
 	"finance-bot/bot/config"
 	"finance-bot/bot/handlers"
+	"finance-bot/bot/llm"
 	"finance-bot/bot/repositories"
 	"finance-bot/bot/services"
 )
@@ -63,12 +64,48 @@ func main() {
 	userRepo := repositories.NewPostgresUserRepository(dbPool)
 	txRepo := repositories.NewPostgresTransactionRepository(dbPool)
 	repRepo := repositories.NewPostgresReportRepository(dbPool)
+	catBudgetRepo := repositories.NewPostgresCategoryBudgetRepository(dbPool)
+	chatMemoryRepo := repositories.NewPostgresChatMemoryRepository(dbPool)
 
 	// Initialize AI Client
 	aiClient := services.NewAIClient(cfg.AIServiceURL)
 
 	// Initialize services with repository injections
-	financeSvc := services.NewFinanceService(aiClient, userRepo, txRepo, repRepo)
+	financeSvc := services.NewFinanceService(aiClient, userRepo, txRepo, repRepo, catBudgetRepo, chatMemoryRepo)
+
+	// Initialize Hermes LLM Client and Orchestration Service
+	// Resolve LLM parameters with support for LLM_BASE_URL env setting
+	var llmAPIURL string
+	if cfg.LLMBaseURL != "" {
+		llmAPIURL = cfg.LLMBaseURL
+	} else {
+		llmAPIURL = cfg.HermesAPIURL
+	}
+
+	var llmModel string
+	if cfg.LLMModel != "" {
+		llmModel = cfg.LLMModel
+	} else {
+		llmModel = cfg.HermesModel
+	}
+
+	var llmAPIKey string
+	if cfg.LLMAPIKey != "" {
+		llmAPIKey = cfg.LLMAPIKey
+	} else if cfg.HermesAPIKey != "" {
+		llmAPIKey = cfg.HermesAPIKey
+	} else {
+		llmAPIKey = cfg.GeminiAPIKey
+	}
+
+	registry := llm.NewRegistry()
+	hermesLLMClient := llm.NewHermesClient(llm.ClientConfig{
+		APIURL:   llmAPIURL,
+		Model:    llmModel,
+		APIKey:   llmAPIKey,
+		Registry: registry,
+	})
+	orchestrationSvc := services.NewOrchestrationService(hermesLLMClient, registry, financeSvc)
 
 	// Initialize Telegram Bot if token is present and not default placeholder
 	var bot *tgbotapi.BotAPI
@@ -91,7 +128,7 @@ func main() {
 			u.Timeout = 60
 			updates := bot.GetUpdatesChan(u)
 
-			handler := handlers.NewBotHandler(bot, financeSvc)
+			handler := handlers.NewBotHandler(bot, financeSvc, orchestrationSvc)
 			go handler.HandleUpdates(updates)
 			log.Println("Started Telegram long polling listener successfully.")
 		}

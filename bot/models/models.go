@@ -30,3 +30,12 @@ type Report struct {
 	Content    string    `json:"content"` // JSONB payload
 	CreatedAt  time.Time `json:"created_at"`
 }
+
+type ChatMessage struct {
+	ID        string    `json:"id"`
+	UserID    string    `json:"user_id"`
+	Role      string    `json:"role"`
+	Content   string    `json:"content"`
+	CreatedAt time.Time `json:"created_at"`
+}
+

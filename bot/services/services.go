@@ -8,6 +8,7 @@ import (
 
 	"finance-bot/bot/models"
 	"finance-bot/bot/repositories"
+	"finance-bot/bot/llm"
 )
 
 type FinanceService interface {
@@ -17,14 +18,22 @@ type FinanceService interface {
 	GetMonthSummary(telegramID int64) (string, error)
 	AnalyzeText(telegramID int64, text string) (string, error)
 	GenerateAIAnalysis(telegramID int64) (string, error)
+	GetTransactions(telegramID int64, limit int, txType string) ([]*models.Transaction, error)
+	SetMonthlyBudget(telegramID int64, amount int64) (string, error)
+	SetCategoryBudget(telegramID int64, category string, amount int64) (string, error)
+	CheckBudgetAlerts(telegramID int64, category string) (string, error)
+	GetChatHistory(telegramID int64) ([]llm.Message, error)
+	SaveChatHistory(telegramID int64, role, content string) error
 }
 
 type financeService struct {
-	ai       AIClient
-	userRepo repositories.UserRepository
-	txRepo   repositories.TransactionRepository
-	repRepo  repositories.ReportRepository
-	loc      *time.Location
+	ai            AIClient
+	userRepo      repositories.UserRepository
+	txRepo        repositories.TransactionRepository
+	repRepo       repositories.ReportRepository
+	catBudgetRepo repositories.CategoryBudgetRepository
+	chatMemoryRepo repositories.ChatMemoryRepository
+	loc           *time.Location
 }
 
 func NewFinanceService(
@@ -32,6 +41,8 @@ func NewFinanceService(
 	userRepo repositories.UserRepository,
 	txRepo repositories.TransactionRepository,
 	repRepo repositories.ReportRepository,
+	catBudgetRepo repositories.CategoryBudgetRepository,
+	chatMemoryRepo repositories.ChatMemoryRepository,
 ) FinanceService {
 	tz := os.Getenv("TZ")
 	if tz == "" {
@@ -43,11 +54,13 @@ func NewFinanceService(
 	}
 
 	return &financeService{
-		ai:       ai,
-		userRepo: userRepo,
-		txRepo:   txRepo,
-		repRepo:  repRepo,
-		loc:      loc,
+		ai:            ai,
+		userRepo:      userRepo,
+		txRepo:        txRepo,
+		repRepo:       repRepo,
+		catBudgetRepo: catBudgetRepo,
+		chatMemoryRepo: chatMemoryRepo,
+		loc:           loc,
 	}
 }
 
@@ -306,4 +319,134 @@ func (s *financeService) GenerateAIAnalysis(telegramID int64) (string, error) {
 	)
 
 	return formattedResponse, nil
+}
+
+func (s *financeService) GetTransactions(telegramID int64, limit int, txType string) ([]*models.Transaction, error) {
+	user, err := s.getOrCreateUser(telegramID, "Telegram User")
+	if err != nil {
+		return nil, err
+	}
+
+	txs, err := s.txRepo.GetByUserID(user.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch transactions: %w", err)
+	}
+
+	// Filter and limit
+	var filtered []*models.Transaction
+	for _, tx := range txs {
+		if txType != "" && tx.Type != txType {
+			continue
+		}
+		filtered = append(filtered, tx)
+		if len(filtered) >= limit {
+			break
+		}
+	}
+	return filtered, nil
+}
+
+func (s *financeService) SetMonthlyBudget(telegramID int64, amount int64) (string, error) {
+	user, err := s.getOrCreateUser(telegramID, "Telegram User")
+	if err != nil {
+		return "", err
+	}
+
+	err = s.userRepo.UpdateBudget(user.ID, amount)
+	if err != nil {
+		return "", fmt.Errorf("gagal update budget bulanan: %w", err)
+	}
+
+	return fmt.Sprintf("✅ *Budget Bulanan Berhasil Diupdate!* 💰\n\nLimit spending bulanan lu sekarang set ke *%s*.", formatIDRCurrency(amount)), nil
+}
+
+func (s *financeService) SetCategoryBudget(telegramID int64, category string, amount int64) (string, error) {
+	user, err := s.getOrCreateUser(telegramID, "Telegram User")
+	if err != nil {
+		return "", err
+	}
+
+	err = s.catBudgetRepo.SetLimit(user.ID, category, amount)
+	if err != nil {
+		return "", fmt.Errorf("gagal update budget kategori: %w", err)
+	}
+
+	return fmt.Sprintf("✅ *Budget Kategori Berhasil Diupdate!* 💰\n\nLimit spending kategori *%s* lu sekarang set ke *%s*.", category, formatIDRCurrency(amount)), nil
+}
+
+func (s *financeService) CheckBudgetAlerts(telegramID int64, category string) (string, error) {
+	user, err := s.getOrCreateUser(telegramID, "Telegram User")
+	if err != nil {
+		return "", err
+	}
+
+	// Fetch all transactions this month to calculate spending
+	txs, err := s.txRepo.GetMonth(user.ID)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch monthly transactions for budget checking: %w", err)
+	}
+
+	var monthlyExpense int64
+	var categoryExpense int64
+	for _, tx := range txs {
+		if tx.Type == "expense" {
+			monthlyExpense += tx.Amount
+			if tx.Category == category {
+				categoryExpense += tx.Amount
+			}
+		}
+	}
+
+	var alerts string
+
+	// 1. Check monthly budget alert
+	if user.MonthlyBudget > 0 && monthlyExpense > user.MonthlyBudget {
+		overage := monthlyExpense - user.MonthlyBudget
+		alerts += fmt.Sprintf("⚠️ *PERINGATAN BUDGET BULANAN!* 💸\nTotal pengeluaran bulan ini sudah mencapai *%s*, melebihi budget bulanan lu (*%s*) sebesar *%s*!\n\n",
+			formatIDRCurrency(monthlyExpense), formatIDRCurrency(user.MonthlyBudget), formatIDRCurrency(overage))
+	}
+
+	// 2. Check category budget alert
+	categoryLimit, err := s.catBudgetRepo.GetLimit(user.ID, category)
+	if err == nil && categoryLimit > 0 && categoryExpense > categoryLimit {
+		overage := categoryExpense - categoryLimit
+		alerts += fmt.Sprintf("⚠️ *PERINGATAN BUDGET KATEGORI!* 💸\nPengeluaran kategori *%s* bulan ini sudah mencapai *%s*, melebihi budget kategori lu (*%s*) sebesar *%s*!\n\n",
+			category, formatIDRCurrency(categoryExpense), formatIDRCurrency(categoryLimit), formatIDRCurrency(overage))
+	}
+
+	return alerts, nil
+}
+
+func (s *financeService) GetChatHistory(telegramID int64) ([]llm.Message, error) {
+	user, err := s.getOrCreateUser(telegramID, "Telegram User")
+	if err != nil {
+		return nil, err
+	}
+
+	dbMsgs, err := s.chatMemoryRepo.GetLastN(user.ID, 20)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch chat messages: %w", err)
+	}
+
+	msgs := make([]llm.Message, len(dbMsgs))
+	for i, dbMsg := range dbMsgs {
+		msgs[i] = llm.Message{
+			Role:    dbMsg.Role,
+			Content: dbMsg.Content,
+		}
+	}
+	return msgs, nil
+}
+
+func (s *financeService) SaveChatHistory(telegramID int64, role, content string) error {
+	user, err := s.getOrCreateUser(telegramID, "Telegram User")
+	if err != nil {
+		return err
+	}
+
+	err = s.chatMemoryRepo.Append(user.ID, role, content)
+	if err != nil {
+		return fmt.Errorf("failed to append chat message: %w", err)
+	}
+	return nil
 }

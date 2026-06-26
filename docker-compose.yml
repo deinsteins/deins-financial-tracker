@@ -35,6 +35,7 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - TZ=${TZ:-Asia/Jakarta}
       - ENV=development
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-1.5-flash}
     depends_on:
       db:
         condition: service_healthy
@@ -64,6 +65,13 @@ services:
       - BOT_PORT=${BOT_PORT:-8080}
       - TZ=${TZ:-Asia/Jakarta}
       - ENV=development
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - HERMES_API_URL=${HERMES_API_URL}
+      - HERMES_MODEL=${HERMES_MODEL}
+      - HERMES_API_KEY=${HERMES_API_KEY}
+      - LLM_BASE_URL=${LLM_BASE_URL}
+      - LLM_MODEL=${LLM_MODEL}
+      - LLM_API_KEY=${LLM_API_KEY}
     depends_on:
       db:
         condition: service_healthy

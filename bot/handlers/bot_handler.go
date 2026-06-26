@@ -1,23 +1,32 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
+	"finance-bot/bot/models"
 	"finance-bot/bot/services"
 )
 
 type BotHandler struct {
-	bot     *tgbotapi.BotAPI
-	finance services.FinanceService
+	bot           *tgbotapi.BotAPI
+	finance       services.FinanceService
+	orchestration services.OrchestrationService
 }
 
-func NewBotHandler(bot *tgbotapi.BotAPI, finance services.FinanceService) *BotHandler {
+func NewBotHandler(
+	bot *tgbotapi.BotAPI,
+	finance services.FinanceService,
+	orchestration services.OrchestrationService,
+) *BotHandler {
 	return &BotHandler{
-		bot:     bot,
-		finance: finance,
+		bot:           bot,
+		finance:       finance,
+		orchestration: orchestration,
 	}
 }
 
@@ -83,12 +92,141 @@ func (h *BotHandler) handleCommand(msg *tgbotapi.Message) {
 }
 
 func (h *BotHandler) handleTextMessage(msg *tgbotapi.Message) {
-	log.Printf("Parsing text message: %s", msg.Text)
-	replyText, err := h.finance.AnalyzeText(msg.From.ID, msg.Text)
+	log.Printf("Parsing text message with Hermes: %s", msg.Text)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// 1. Fetch conversational history memory context
+	history, err := h.finance.GetChatHistory(msg.From.ID)
 	if err != nil {
-		replyText = fmt.Sprintf("⚠️ *Waduh, ada kendala pas nyatet transaksi lu nih:*\n%v", err)
+		log.Printf("WARNING: failed to load chat memory context: %v", err)
+		history = nil // fallback to empty context
 	}
-	h.sendReply(msg.Chat.ID, replyText, msg.MessageID)
+
+	intent, err := h.orchestration.ParseIntent(ctx, history, msg.Text)
+	if err != nil {
+		replyText := fmt.Sprintf("⚠️ *Waduh, gagal memproses perintah lewat Hermes:*\n%v", err)
+		h.sendReply(msg.Chat.ID, replyText, msg.MessageID)
+		return
+	}
+
+	// 2. Check if tools need to be executed
+	if len(intent.ToolCalls) > 0 {
+		var replyText string
+		log.Printf("Hermes returned %d tool calls to execute sequentially", len(intent.ToolCalls))
+
+		for i, tc := range intent.ToolCalls {
+			log.Printf("Executing tool %d/%d: %s with args: %s", i+1, len(intent.ToolCalls), tc.ToolName, tc.ArgsRaw)
+			
+			res, err := h.orchestration.Dispatch(ctx, msg.From.ID, tc.ToolName, tc.ArgsRaw)
+			if err != nil {
+				replyText += fmt.Sprintf("❌ *Gagal mengeksekusi %s:*\n%v\n\n", tc.ToolName, err)
+				continue
+			}
+
+			// Format response card dynamically based on the tool
+			switch tc.ToolName {
+			case "save_transaction":
+				tx, ok := res.(*models.Transaction)
+				if !ok {
+					replyText += "✅ *Transaksi Berhasil Disimpan!*\n\n"
+					continue
+				}
+				typeEmoji := "💸 pengeluaran"
+				if tx.Type == "income" {
+					typeEmoji = "💰 pemasukan"
+				}
+				replyText += fmt.Sprintf("✅ *Catatan Berhasil Disimpan!* 🎉\n\n"+
+					"• *Tipe*: %s\n"+
+					"• *Kategori*: %s\n"+
+					"• *Jumlah*: %s\n"+
+					"• *Deskripsi*: %s\n\n",
+					typeEmoji, tx.Category, formatIDRCurrency(tx.Amount), tx.Description)
+
+				// Proactively check and append budget alerts
+				if tx.Type == "expense" {
+					alerts, err := h.finance.CheckBudgetAlerts(msg.From.ID, tx.Category)
+					if err == nil && alerts != "" {
+						replyText += alerts
+					}
+				}
+
+			case "get_today_summary":
+				if summary, ok := res.(string); ok {
+					replyText += summary + "\n\n"
+				} else {
+					replyText += "📋 *Gagal memformat rekap hari ini.*\n\n"
+				}
+
+			case "get_month_summary":
+				if summary, ok := res.(string); ok {
+					replyText += summary + "\n\n"
+				} else {
+					replyText += "📋 *Gagal memformat rekap bulanan.*\n\n"
+				}
+
+			case "get_transactions":
+				txs, ok := res.([]*models.Transaction)
+				if !ok {
+					replyText += "📋 *Gagal memformat daftar transaksi.*\n\n"
+					continue
+				}
+				if len(txs) == 0 {
+					replyText += "📂 *Belum ada riwayat transaksi nih bro.*\n\n"
+				} else {
+					replyText += "📋 *Daftar Transaksi Terbaru Lu:*\n"
+					for _, tx := range txs {
+						typeSign := "💸"
+						if tx.Type == "income" {
+							typeSign = "💰"
+						}
+						replyText += fmt.Sprintf("• %s *%s*: %s - %s (_%s_)\n",
+							typeSign, tx.Category, formatIDRCurrency(tx.Amount), tx.Description, tx.TransactionDate.Format("02 Jan 15:04"))
+					}
+					replyText += "\n"
+				}
+
+			case "analyze_spending":
+				if analysis, ok := res.(string); ok {
+					replyText += analysis + "\n\n"
+				} else {
+					replyText += "🤖 *Gagal memformat analisis keuangan.*\n\n"
+				}
+
+			case "set_monthly_budget":
+				if budgetMsg, ok := res.(string); ok {
+					replyText += budgetMsg + "\n\n"
+				} else {
+					replyText += "✅ *Budget bulanan berhasil diubah.*\n\n"
+				}
+
+			case "set_category_budget":
+				if budgetMsg, ok := res.(string); ok {
+					replyText += budgetMsg + "\n\n"
+				} else {
+					replyText += "✅ *Budget kategori berhasil diubah.*\n\n"
+				}
+
+			default:
+				replyText += fmt.Sprintf("✅ *Eksekusi %s berhasil.*\n\n", tc.ToolName)
+			}
+		}
+
+		h.sendReply(msg.Chat.ID, replyText, msg.MessageID)
+
+		// 3. Save memory context (only for successful turns)
+		_ = h.finance.SaveChatHistory(msg.From.ID, "user", msg.Text)
+		_ = h.finance.SaveChatHistory(msg.From.ID, "assistant", replyText)
+		return
+	}
+
+	// 2. Direct conversational fallback
+	h.sendReply(msg.Chat.ID, intent.Response, msg.MessageID)
+
+	// 3. Save memory context (only for successful turns)
+	_ = h.finance.SaveChatHistory(msg.From.ID, "user", msg.Text)
+	_ = h.finance.SaveChatHistory(msg.From.ID, "assistant", intent.Response)
 }
 
 func (h *BotHandler) sendReply(chatID int64, text string, replyToMessageID int) {
@@ -99,4 +237,22 @@ func (h *BotHandler) sendReply(chatID int64, text string, replyToMessageID int) 
 	if _, err := h.bot.Send(reply); err != nil {
 		log.Printf("Failed to send message: %v", err)
 	}
+}
+
+func formatIDRCurrency(amount int64) string {
+	s := fmt.Sprintf("%d", amount)
+	if len(s) <= 3 {
+		return "Rp " + s
+	}
+
+	var res []byte
+	n := 0
+	for i := len(s) - 1; i >= 0; i-- {
+		if n > 0 && n%3 == 0 {
+			res = append([]byte{'.'}, res...)
+		}
+		res = append([]byte{s[i]}, res...)
+		n++
+	}
+	return "Rp " + string(res)
 }
