@@ -2,6 +2,7 @@ import os
 import re
 import json
 import logging
+import urllib.request
 from pydantic import BaseModel, Field
 import google.generativeai as genai
 
@@ -161,17 +162,60 @@ class ParserService:
     def __init__(self):
         self.api_key = os.getenv("GEMINI_API_KEY")
         self.model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
-        self.is_configured = False
+        
+        self.llm_base_url = os.getenv("LLM_BASE_URL")
+        self.llm_model = os.getenv("LLM_MODEL")
+        self.llm_api_key = os.getenv("LLM_API_KEY")
+        
+        self.is_gemini_configured = False
+        self.is_custom_llm_configured = False
         
         if self.api_key and self.api_key != "YOUR_GEMINI_API_KEY_HERE":
             try:
                 genai.configure(api_key=self.api_key)
-                self.is_configured = True
+                self.is_gemini_configured = True
                 logger.info("Gemini API initialized successfully.")
             except Exception as e:
                 logger.error(f"Failed to configure Gemini API: {e}")
-        else:
-            logger.warning("Gemini API Key is not set or is placeholder. Falling back to rule-based parser/analyzer.")
+                
+        if self.llm_base_url:
+            self.is_custom_llm_configured = True
+            logger.info(f"Custom LLM initialized successfully with base URL: {self.llm_base_url}")
+            
+        self.is_configured = self.is_gemini_configured or self.is_custom_llm_configured
+        if not self.is_configured:
+            logger.warning("No LLM configurations found. Falling back to rule-based parser/analyzer.")
+
+    def _call_custom_llm(self, prompt: str, system_prompt: str = None) -> str:
+        url = f"{self.llm_base_url.rstrip('/')}/chat/completions"
+        
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        
+        payload = {
+            "model": self.llm_model or "gpt-4o",
+            "messages": messages
+        }
+        
+        # Standard OpenAI json format
+        payload["response_format"] = {"type": "json_object"}
+        
+        data = json.dumps(payload).encode("utf-8")
+        
+        req = urllib.request.Request(url, data=data, method="POST")
+        req.add_header("Content-Type", "application/json")
+        if self.llm_api_key:
+            req.add_header("Authorization", f"Bearer {self.llm_api_key}")
+            
+        try:
+            with urllib.request.urlopen(req, timeout=15) as response:
+                resp_data = json.loads(response.read().decode("utf-8"))
+                return resp_data["choices"][0]["message"]["content"]
+        except Exception as e:
+            logger.error(f"Custom LLM HTTP request failed: {e}")
+            raise e
 
     def parse_transaction(self, text: str) -> ParsedTransaction:
         preprocessed_text = normalize_indonesian_currency(text)
@@ -181,6 +225,38 @@ class ParserService:
             logger.info("Using local fallback rule-based parser.")
             parsed_data = fallback_parse(text)
             return ParsedTransaction(**parsed_data)
+
+        if self.is_custom_llm_configured:
+            try:
+                system_prompt = "You are a personal finance assistant transaction parser."
+                prompt = f"""
+Parse the following text and extract transaction details.
+The input text has been normalized to help you: "{preprocessed_text}"
+
+Return a JSON object containing:
+1. "type": "expense" or "income".
+2. "category": a normalized category name (lowercase, e.g., "food", "transport", "utilities", "entertainment", "salary", "other").
+3. "amount": the transaction amount as an integer.
+4. "description": what the transaction was for (exclude the amount or currency symbols, and clean up into friendly informal Indonesian if necessary).
+
+Return ONLY a JSON object. Do not wrap in markdown tags like ```json.
+"""
+                raw_json = self._call_custom_llm(prompt, system_prompt).strip()
+                if raw_json.startswith("```"):
+                    lines = raw_json.split("\n")
+                    if lines[0].startswith("```"):
+                        lines = lines[1:]
+                    if lines[-1].startswith("```"):
+                        lines = lines[:-1]
+                    raw_json = "\n".join(lines).strip()
+                    
+                logger.info(f"Custom LLM raw response: {raw_json}")
+                parsed_data = json.loads(raw_json)
+                return ParsedTransaction(**parsed_data)
+            except Exception as e:
+                logger.error(f"Custom LLM parse failed: {e}. Falling back to rule-based parser.")
+                parsed_data = fallback_parse(text)
+                return ParsedTransaction(**parsed_data)
 
         try:
             prompt = f"""
@@ -222,6 +298,58 @@ Return ONLY a JSON object. Do not wrap in markdown tags like ```json.
             logger.info("Using local fallback rule-based analyzer.")
             analysis_data = fallback_analyze(transactions)
             return AnalyzeResponse(**analysis_data)
+
+        if self.is_custom_llm_configured:
+            try:
+                tx_lines = []
+                for tx in transactions:
+                    date_val = tx.get("transaction_date") or tx.get("created_at") or "unknown"
+                    tx_lines.append(
+                        f"- [{date_val}] {tx.get('type')} | {tx.get('category')} | Amount: {tx.get('amount')} | Description: {tx.get('description')}"
+                    )
+                txs_formatted = "\n".join(tx_lines)
+
+                system_prompt = "You are a expert personal finance advisor."
+                prompt = f"""
+Analyze the following list of user transactions and generate:
+1. Spending pattern analysis
+2. Biggest expense category
+3. Unusual spending detection (outliers, sudden jumps, high frequency of specific items)
+4. Saving recommendations
+
+**Crucial Constraint**: Write all output values (the "summary" paragraph and each string in the "insights" array) in informal/casual Indonesian (Bahasa Indonesia gaul/santai, using terms like "lu", "gua", "nih", "bro", "sist", "lho", "coba deh", "yuk", "boncos", "hemat"). Speak like a close supportive friend advising them on their money. Keep the tone warm, supportive, and highly conversational.
+
+Transactions List:
+{txs_formatted}
+
+Return a JSON object conforming exactly to this structure:
+{{
+  "summary": "A friendly paragraph summarizing their financial health and spending patterns in casual Indonesian.",
+  "insights": [
+    "Insight 1: Casual Indonesian observation about spending patterns or the biggest expense category.",
+    "Insight 2: Casual Indonesian check/warning about unusual spending or high-cost transactions.",
+    "Insight 3: A concrete actionable recommendation in casual Indonesian on how they can save money."
+  ]
+}}
+
+Return ONLY the raw JSON object. Do not wrap in markdown tags.
+"""
+                raw_json = self._call_custom_llm(prompt, system_prompt).strip()
+                if raw_json.startswith("```"):
+                    lines = raw_json.split("\n")
+                    if lines[0].startswith("```"):
+                        lines = lines[1:]
+                    if lines[-1].startswith("```"):
+                        lines = lines[:-1]
+                    raw_json = "\n".join(lines).strip()
+                    
+                logger.info(f"Custom LLM analyze response: {raw_json}")
+                analysis_data = json.loads(raw_json)
+                return AnalyzeResponse(**analysis_data)
+            except Exception as e:
+                logger.error(f"Custom LLM analyze failed: {e}. Falling back to rule-based analyzer.")
+                analysis_data = fallback_analyze(transactions)
+                return AnalyzeResponse(**analysis_data)
 
         try:
             tx_lines = []
