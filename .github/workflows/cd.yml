@@ -44,6 +44,14 @@ jobs:
               fi
             fi
             
+            # Clean up existing conflicting containers with the same names to prevent conflicts
+            for name in finance-db-prod finance-ai-service-prod finance-bot-prod; do
+              if [ "$(docker ps -a -q -f name=^/${name}$)" ]; then
+                echo "Found conflicting container '$name'. Removing it to prevent daemon conflicts..."
+                docker rm -f $name
+              fi
+            done
+            
             # Attempt to build and run updated services
             echo "Building and starting production containers..."
             if ! docker compose -f docker-compose.prod.yml up -d --build --remove-orphans; then
