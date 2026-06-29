@@ -1,4 +1,4 @@
-# Telegram Personal Finance Assistant
+# Telegram Personal Finance Assistant (Hermes)
 
 A modern, containerized monorepo containing a Telegram personal finance assistant named **Hermes** powered by Go, Python FastAPI, and Gemini/OpenAI-compatible LLMs.
 
@@ -13,10 +13,29 @@ A modern, containerized monorepo containing a Telegram personal finance assistan
   * Bot: `"Totalnya Rp 50.000, bro!"`
   * User: `"yang paling besar apa?"`
   * Bot: `"Yang paling besar tadi makan siang sebesar Rp 30.000, bro."`
-* **Budget Monitoring & Over-Budget Warnings**:
-  * Set total monthly budget limit (e.g., `"set budget bulanan gua 5 juta"`).
-  * Set specific category limits (e.g., `"set limit food 500rb"`).
-  * **Proactive Warning alerts**: Immediately notifies you if your new transaction breaches the monthly or category limits.
+* **Timezone-Aware Calculations**: Daily and monthly transaction query boundaries are dynamically mapped to your configured local timezone (e.g. `Asia/Jakarta`, UTC+7) instead of default server/UTC time.
+* **Budget Monitoring & Alerts**:
+  * Set specific category limits (e.g., `/budget set food 500rb`).
+  * Check status using `/budget status` to see a structured usage card.
+  * **Proactive Warning alerts**: Immediately notifies you if your transaction breaches `80%` (Warning) or `100%` (Over-budget limit) of category or monthly limits.
+* **Financial Goals**:
+  * Set saving goals with `/goal add <name> <amount> <deadline>`.
+  * Track progress with `/goal status` which uses a **waterfall allocation** algorithm from your net savings and calculates required monthly saving rates to meet deadlines.
+* **Multi-Wallet Support**:
+  * Seeding default wallets: `cash`, `bank`, and `ewallet`.
+  * Dynamic prefixes support (e.g., `"bca makan 25rb"`, `"ovo ojek 15k"`). Wallet prefixes are stripped to keep LLM parsing clean.
+  * Automatically deducts or increments the specific wallet's balance. Check saldos using `/wallets` or `/wallet`.
+* **Recurring Expense/Subscription Detection**:
+  * Query using `/subscriptions` to check recurring expenses.
+  * Auto-detects cycles matching **Weekly**, **Monthly**, or **Yearly** patterns from your history, estimating due dates and upcoming costs.
+* **Upgraded Spending Analysis**:
+  * Calling `/analyze` returns a rich, detailed dashboard highlighting:
+    * **Financial Score (0-100)**: Scaled against your monthly saving rate.
+    * **Highest spending day**: Formatted in Indonesian days/months.
+    * **Spending anomalies**: Outliers > 2.5x of average transaction values or > Rp 500.000.
+    * **Wasteful spending**: High frequency small items (e.g., repeated food/coffee purchases).
+    * **Trends**: Dominating category spending trends.
+    * **Saving recommendations**.
 * **Dynamic LLM Configuration**:
   * Run on Gemini using `gemini-1.5-flash` or `gemini-1.5-pro` (Gemini Pro).
   * Run on **any other OpenAI-compatible LLM** (e.g., local Ollama, LM Studio, OpenAI API) by configuring base URL settings in environment variables.
@@ -31,8 +50,8 @@ finance-bot/
 │   ├── config/         # Environment variable configuration loading
 │   ├── handlers/       # Telegram bot handlers & reply card formatting
 │   ├── llm/            # Hermes client (OpenAI-compatible) and tool registries
-│   ├── models/         # Postgres models (User, Transaction, Report, ChatMessage)
-│   ├── repositories/   # DB query handlers (Postgres, DDL migration scripts)
+│   ├── models/         # Postgres models (User, Transaction, Report, ChatMessage, Goal, Wallet)
+│   ├── repositories/   # DB query handlers (Postgres, DDL schemas)
 │   ├── services/       # Service layer (AI Client, Orchestrator, FinanceService)
 │   └── Dockerfile      # Multi-stage Docker build
 ├── ai-service/         # Python FastAPI service (AI logic)
@@ -43,8 +62,10 @@ finance-bot/
 ├── db/                 # Database configuration
 │   ├── migrations/     # Database initialization schema (init.up.sql)
 │   └── seed.sql        # Database seed data
-├── docker-compose.yml  # Main local orchestration
+├── docker-compose.yml  # Local developer environment composition
+├── docker-compose.prod.yml # Production-ready composition (log rotation, strict network isolation)
 ├── .env.example        # Environment variables template
+├── .env.prod.example   # Production environment template
 ├── Makefile            # Developer helper scripts
 └── README.md           # This documentation
 ```
@@ -72,6 +93,8 @@ Ensure you have the following installed:
 2. **Build and Run Services**:
    ```bash
    make build
+   ```
+   ```bash
    make up
    ```
 
@@ -91,13 +114,40 @@ Ensure you have the following installed:
 
 ---
 
+## 🚀 Production Deployment & CI/CD
+
+### Production Composition
+The application contains a dedicated `docker-compose.prod.yml` configuration:
+* **Log Rotation**: Captures up to 3 files of 10MB each.
+* **Network Isolation**: Placed on isolated network drivers.
+* **Port Bindings**: Ports bind locally (`127.0.0.1`) to restrict external access.
+* **No Seeding**: Seed SQL files are blocked from mounting in production.
+
+Production CLI:
+* `make prod-build`: Build production Docker images.
+* `make prod-up`: Spin up production stack.
+* `make prod-down`: Stop production stack.
+* `make prod-logs`: Tail logs.
+* `make prod-status`: Check status.
+
+### CI/CD Pipelines
+Workflow pipelines are integrated under `.github/workflows/`:
+1. **CI Pipeline (`ci.yml`)**: Compiles/tests Go services, checks Python FastAPI syntax, and verifies Docker Compose files on every pull request or commit to `master`.
+2. **CD Pipeline (`cd.yml`)**: Deploys the code semi-automatically via manual trigger (`workflow_dispatch`) or tags matching `v*` directly to an AWS EC2 VPS:
+   * Cleans older conflicting container names.
+   * Pulls and performs rolling updates.
+   * **Automated Rollback**: Validates VPS health after 15 seconds. If healthchecks fail or services crash, automatically rolls back to the previous stable git commit and restarts the stack.
+
+---
+
 ## 🛠️ Configuration Details (`.env`)
 
 | Variable | Description | Default / Example |
 | :--- | :--- | :--- |
 | `TELEGRAM_BOT_TOKEN` | Token for Telegram Bot integration. | `8710277279:...` |
 | `GEMINI_API_KEY` | Google Gemini API key. | `AQ.Ab8R...` |
-| `GEMINI_MODEL` | Gemini model to use in the Python AI Service. | `gemini-1.5-pro` |
+| `GEMINI_MODEL` | Gemini model to use in the Python AI Service. | `gemini-1.5-flash` |
+| `TZ` | Location timezone for local calculations. | `Asia/Jakarta` |
 | `LLM_BASE_URL` | Base URL for custom LLM (OpenAI-compatible). | `https://api.openai.com/v1` |
 | `LLM_MODEL` | Model identifier for custom LLM. | `gpt-4o` |
 | `LLM_API_KEY` | API Key for custom LLM. | `sk-proj-...` |
@@ -108,4 +158,4 @@ Ensure you have the following installed:
 
 * **Go Bot Service (`bot`)**: Handles Telegram client updates, parses commands, writes to database repositories, routes intent analysis to the LLM client, and formats the user cards.
 * **FastAPI AI Service (`ai-service`)**: Integrates with Gemini for unstructured transaction text parsing (`/parse`) and generating deep monthly financial analysis/savings observations (`/analyze`).
-* **Postgres Database (`db`)**: Relational database storage for users, transaction registries, category budgets, and chat message history.
+* **Postgres Database (`db`)**: Relational database storage for users, transaction registries, category budgets, goals, wallets, and chat message history.
