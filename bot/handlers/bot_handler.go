@@ -71,6 +71,7 @@ func (h *BotHandler) handleCommand(msg *tgbotapi.Message) {
 			"/goal add <nama> <jumlah> <deadline> - Set target keuangan baru\n"+
 			"/goal status - Cek progress target keuangan lu\n"+
 			"/wallets - Cek saldo dompet (cash, bank, ewallet, etc.)\n"+
+			"/subscriptions - Cek daftar pengeluaran rutin/langganan lu\n"+
 			"/analyze - Minta AI buatin analisis keuangan lu\n\n"+
 			"Atau langsung ketik aja transaksi lu, contoh: 'makan bakso 25rb'. Nanti gua catetin!", msg.From.FirstName)
 
@@ -96,6 +97,12 @@ func (h *BotHandler) handleCommand(msg *tgbotapi.Message) {
 		replyText, err = h.finance.GetWalletBalances(msg.From.ID)
 		if err != nil {
 			replyText = fmt.Sprintf("⚠️ *Gagal mengambil saldo dompet:*\n%v", err)
+		}
+
+	case "subscription", "subscriptions":
+		replyText, err = h.finance.GetSubscriptions(msg.From.ID)
+		if err != nil {
+			replyText = fmt.Sprintf("⚠️ *Gagal mendeteksi langganan:*\n%v", err)
 		}
 
 	case "analyze":

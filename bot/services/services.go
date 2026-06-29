@@ -3,7 +3,9 @@ package services
 import (
 	"fmt"
 	"log"
+	"math"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -27,6 +29,7 @@ type FinanceService interface {
 	AddGoal(telegramID int64, name string, targetAmount int64, deadline time.Time) (string, error)
 	GetGoalStatus(telegramID int64) (string, error)
 	GetWalletBalances(telegramID int64) (string, error)
+	GetSubscriptions(telegramID int64) (string, error)
 	GetChatHistory(telegramID int64) ([]llm.Message, error)
 	SaveChatHistory(telegramID int64, role, content string) error
 }
@@ -709,4 +712,182 @@ func (s *financeService) GetWalletBalances(telegramID int64) (string, error) {
 		msg.WriteString(fmt.Sprintf("• *%s*: %s\n", w.Name, formatIDRCurrency(w.Balance)))
 	}
 	return msg.String(), nil
+}
+
+type Subscription struct {
+	Description string
+	Amount      int64
+	Interval    string // "Mingguan", "Bulanan", "Tahunan"
+	LastDate    time.Time
+	NextDate    time.Time
+	Occurrences int
+}
+
+func (s *financeService) GetSubscriptions(telegramID int64) (string, error) {
+	user, err := s.getOrCreateUser(telegramID, "Telegram User")
+	if err != nil {
+		return "", err
+	}
+
+	txs, err := s.txRepo.GetByUserID(user.ID)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch transactions: %w", err)
+	}
+
+	// 1. Group expenses by normalized description
+	groups := make(map[string][]*models.Transaction)
+	for _, tx := range txs {
+		if tx.Type != "expense" {
+			continue
+		}
+		desc := strings.ToLower(strings.TrimSpace(tx.Description))
+		if desc == "" {
+			continue
+		}
+		groups[desc] = append(groups[desc], tx)
+	}
+
+	var subs []Subscription
+
+	for desc, list := range groups {
+		if len(list) < 2 {
+			continue
+		}
+
+		// Sort transactions by date ascending
+		sort.Slice(list, func(i, j int) bool {
+			return list[i].TransactionDate.Before(list[j].TransactionDate)
+		})
+
+		// Calculate intervals in days
+		var intervals []int
+		for i := 1; i < len(list); i++ {
+			diff := list[i].TransactionDate.Sub(list[i-1].TransactionDate)
+			days := int(math.Round(diff.Hours() / 24))
+			intervals = append(intervals, days)
+		}
+
+		// Check consistency of intervals
+		isWeekly := true
+		isMonthly := true
+		isYearly := true
+
+		for _, days := range intervals {
+			if days < 5 || days > 9 {
+				isWeekly = false
+			}
+			if days < 25 || days > 35 {
+				isMonthly = false
+			}
+			if days < 350 || days > 380 {
+				isYearly = false
+			}
+		}
+
+		var intervalType string
+		var nextInterval time.Duration
+
+		if isWeekly {
+			intervalType = "Mingguan"
+			nextInterval = 7 * 24 * time.Hour
+		} else if isMonthly {
+			intervalType = "Bulanan"
+			nextInterval = 30 * 24 * time.Hour
+		} else if isYearly {
+			intervalType = "Tahunan"
+			nextInterval = 365 * 24 * time.Hour
+		} else {
+			// Calculate average interval
+			sum := 0
+			for _, days := range intervals {
+				sum += days
+			}
+			avgDays := float64(sum) / float64(len(intervals))
+			
+			consistent := true
+			for _, days := range intervals {
+				if math.Abs(float64(days)-avgDays) > 4 {
+					consistent = false
+					break
+				}
+			}
+
+			if consistent {
+				if avgDays >= 6 && avgDays <= 8 {
+					intervalType = "Mingguan"
+					nextInterval = 7 * 24 * time.Hour
+				} else if avgDays >= 25 && avgDays <= 35 {
+					intervalType = "Bulanan"
+					nextInterval = 30 * 24 * time.Hour
+				} else if avgDays >= 350 && avgDays <= 380 {
+					intervalType = "Tahunan"
+					nextInterval = 365 * 24 * time.Hour
+				}
+			}
+		}
+
+		if intervalType != "" {
+			latestTx := list[len(list)-1]
+			
+			var nextDate time.Time
+			if intervalType == "Bulanan" {
+				nextDate = latestTx.TransactionDate.AddDate(0, 1, 0)
+			} else if intervalType == "Tahunan" {
+				nextDate = latestTx.TransactionDate.AddDate(1, 0, 0)
+			} else if intervalType == "Mingguan" {
+				nextDate = latestTx.TransactionDate.AddDate(0, 0, 7)
+			} else {
+				nextDate = latestTx.TransactionDate.Add(nextInterval)
+			}
+
+			subs = append(subs, Subscription{
+				Description: desc,
+				Amount:      latestTx.Amount,
+				Interval:    intervalType,
+				LastDate:    latestTx.TransactionDate,
+				NextDate:    nextDate,
+				Occurrences: len(list),
+			})
+		}
+	}
+
+	// 2. Format the response
+	if len(subs) == 0 {
+		return "🔄 *Belum mendeteksi adanya pengeluaran berulang atau langganan rutin nih bro.*\n" +
+			"Gua bakal otomatis ngedeteksi langganan (seperti Netflix, Spotify, gym) kalau ada transaksi sejenis minimal 2 kali dengan interval waktu yang konsisten.", nil
+	}
+
+	// Sort subscriptions by NextDate ascending (earliest due first)
+	sort.Slice(subs, func(i, j int) bool {
+		return subs[i].NextDate.Before(subs[j].NextDate)
+	})
+
+	var responseMsg strings.Builder
+	responseMsg.WriteString("🔄 *Langganan & Pengeluaran Rutin Terdeteksi*\n\n")
+	now := time.Now().In(s.loc)
+	for i, sub := range subs {
+		lastDateStr := sub.LastDate.In(s.loc).Format("02 Jan 2006")
+		nextDateStr := sub.NextDate.In(s.loc).Format("02 Jan 2006")
+		
+		daysLeft := int(math.Round(sub.NextDate.Sub(now).Hours() / 24))
+		var daysLeftStr string
+		if daysLeft < 0 {
+			daysLeftStr = fmt.Sprintf("lewat %d hari", -daysLeft)
+		} else if daysLeft == 0 {
+			daysLeftStr = "hari ini!"
+		} else {
+			daysLeftStr = fmt.Sprintf("%d hari lagi", daysLeft)
+		}
+
+		responseMsg.WriteString(fmt.Sprintf("%d. *%s*\n"+
+			"   • *Biaya*: %s / %s\n"+
+			"   • *Transaksi Terakhir*: %s\n"+
+			"   • *Estimasi Berikutnya*: %s (%s)\n"+
+			"   • *Jumlah Deteksi*: %d kali\n\n",
+			i+1, sub.Description,
+			formatIDRCurrency(sub.Amount), strings.ToLower(sub.Interval),
+			lastDateStr, nextDateStr, daysLeftStr, sub.Occurrences))
+	}
+
+	return responseMsg.String(), nil
 }
