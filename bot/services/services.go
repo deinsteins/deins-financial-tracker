@@ -122,7 +122,7 @@ func (s *financeService) GetTodaySummary(telegramID int64) (string, error) {
 		return "", err
 	}
 
-	txs, err := s.txRepo.GetToday(user.ID)
+	txs, err := s.txRepo.GetToday(user.ID, s.loc.String())
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch today's transactions: %w", err)
 	}
@@ -137,7 +137,7 @@ func (s *financeService) GetMonthSummary(telegramID int64) (string, error) {
 		return "", err
 	}
 
-	txs, err := s.txRepo.GetMonth(user.ID)
+	txs, err := s.txRepo.GetMonth(user.ID, s.loc.String())
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch monthly transactions: %w", err)
 	}
@@ -290,7 +290,7 @@ func (s *financeService) GenerateAIAnalysis(telegramID int64) (string, error) {
 		return "", err
 	}
 
-	txs, err := s.txRepo.GetMonth(user.ID)
+	txs, err := s.txRepo.GetMonth(user.ID, s.loc.String())
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch transactions for analysis: %w", err)
 	}
@@ -381,7 +381,7 @@ func (s *financeService) CheckBudgetAlerts(telegramID int64, category string) (s
 	}
 
 	// Fetch all transactions this month to calculate spending
-	txs, err := s.txRepo.GetMonth(user.ID)
+	txs, err := s.txRepo.GetMonth(user.ID, s.loc.String())
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch monthly transactions for budget checking: %w", err)
 	}

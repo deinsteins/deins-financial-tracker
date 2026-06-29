@@ -13,8 +13,8 @@ type UserRepository interface {
 type TransactionRepository interface {
 	Create(tx *models.Transaction) error
 	GetByUserID(userID string) ([]*models.Transaction, error)
-	GetToday(userID string) ([]*models.Transaction, error)
-	GetMonth(userID string) ([]*models.Transaction, error)
+	GetToday(userID string, tz string) ([]*models.Transaction, error)
+	GetMonth(userID string, tz string) ([]*models.Transaction, error)
 }
 
 type ReportRepository interface {

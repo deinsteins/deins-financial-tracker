@@ -50,20 +50,20 @@ func (r *postgresTransactionRepository) GetByUserID(userID string) ([]*models.Tr
 	return r.queryTransactions(query, userID)
 }
 
-func (r *postgresTransactionRepository) GetToday(userID string) ([]*models.Transaction, error) {
+func (r *postgresTransactionRepository) GetToday(userID string, tz string) ([]*models.Transaction, error) {
 	query := `SELECT id, user_id, type, category, amount, description, transaction_date, created_at 
 	          FROM transactions 
-	          WHERE user_id = $1 AND transaction_date::date = CURRENT_DATE 
+	          WHERE user_id = $1 AND (transaction_date AT TIME ZONE $2)::date = (CURRENT_TIMESTAMP AT TIME ZONE $2)::date 
 	          ORDER BY transaction_date DESC`
-	return r.queryTransactions(query, userID)
+	return r.queryTransactions(query, userID, tz)
 }
 
-func (r *postgresTransactionRepository) GetMonth(userID string) ([]*models.Transaction, error) {
+func (r *postgresTransactionRepository) GetMonth(userID string, tz string) ([]*models.Transaction, error) {
 	query := `SELECT id, user_id, type, category, amount, description, transaction_date, created_at 
 	          FROM transactions 
-	          WHERE user_id = $1 AND date_trunc('month', transaction_date) = date_trunc('month', CURRENT_DATE) 
+	          WHERE user_id = $1 AND date_trunc('month', transaction_date AT TIME ZONE $2) = date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE $2) 
 	          ORDER BY transaction_date DESC`
-	return r.queryTransactions(query, userID)
+	return r.queryTransactions(query, userID, tz)
 }
 
 func (r *postgresTransactionRepository) queryTransactions(query string, args ...interface{}) ([]*models.Transaction, error) {
