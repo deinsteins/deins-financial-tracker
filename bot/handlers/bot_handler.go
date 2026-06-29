@@ -68,6 +68,8 @@ func (h *BotHandler) handleCommand(msg *tgbotapi.Message) {
 			"/month - Cek rekap bulanan lu\n"+
 			"/budget set <kategori> <jumlah> - Set budget bulanan kategori tertentu\n"+
 			"/budget status - Cek status budget pengeluaran lu\n"+
+			"/goal add <nama> <jumlah> <deadline> - Set target keuangan baru\n"+
+			"/goal status - Cek progress target keuangan lu\n"+
 			"/analyze - Minta AI buatin analisis keuangan lu\n\n"+
 			"Atau langsung ketik aja transaksi lu, contoh: 'makan bakso 25rb'. Nanti gua catetin!", msg.From.FirstName)
 
@@ -85,6 +87,9 @@ func (h *BotHandler) handleCommand(msg *tgbotapi.Message) {
 
 	case "budget":
 		replyText = h.handleBudgetCommand(msg.From.ID, msg.CommandArguments())
+
+	case "goal":
+		replyText = h.handleGoalCommand(msg.From.ID, msg.CommandArguments())
 
 	case "analyze":
 		replyText, err = h.finance.GenerateAIAnalysis(msg.From.ID)
@@ -350,5 +355,91 @@ func (h *BotHandler) handleBudgetCommand(telegramID int64, args string) string {
 
 	default:
 		return "⚠️ Perintah tidak dikenal. Gunakan `/budget set` atau `/budget status`."
+	}
+}
+
+func parseDeadline(s string) (time.Time, error) {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if s == "" {
+		return time.Time{}, fmt.Errorf("deadline tidak boleh kosong")
+	}
+
+	// 1. Check relative months, e.g. "12m", "6m"
+	reMonths := regexp.MustCompile(`^(\d+)m$`)
+	if matches := reMonths.FindStringSubmatch(s); len(matches) > 0 {
+		monthsVal, err := strconv.Atoi(matches[1])
+		if err != nil {
+			return time.Time{}, fmt.Errorf("format bulan '%s' tidak valid", matches[1])
+		}
+		now := time.Now()
+		future := now.AddDate(0, monthsVal, 0)
+		return time.Date(future.Year(), future.Month(), future.Day(), 23, 59, 59, 0, time.UTC), nil
+	}
+
+	// 2. Check full YYYY-MM-DD
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 0, time.UTC), nil
+	}
+
+	// 3. Check YYYY-MM
+	if t, err := time.Parse("2006-01", s); err == nil {
+		nextMonth := time.Date(t.Year(), t.Month()+1, 1, 0, 0, 0, 0, time.UTC)
+		lastDay := nextMonth.Add(-24 * time.Hour)
+		return time.Date(lastDay.Year(), lastDay.Month(), lastDay.Day(), 23, 59, 59, 0, time.UTC), nil
+	}
+
+	return time.Time{}, fmt.Errorf("format deadline '%s' tidak didukung. Gunakan YYYY-MM-DD (contoh: 2026-12-31) atau format bulan relative (contoh: 12m)", s)
+}
+
+func (h *BotHandler) handleGoalCommand(telegramID int64, args string) string {
+	args = strings.TrimSpace(args)
+	if args == "" {
+		return "📋 *Panduan Perintah /goal*:\n\n" +
+			"• `/goal add <nama> <jumlah> <deadline>` - Set target keuangan baru\n" +
+			"  _Nama bisa mengandung spasi, deadline bisa YYYY-MM-DD atau jumlah bulan relative seperti 12m._\n" +
+			"  _Contoh: `/goal add Beli Laptop 12jt 2026-12-31`_\n" +
+			"  _Contoh: `/goal add DP Motor 5jt 6m`_\n\n" +
+			"• `/goal status` - Cek progress & saran tabungan target keuangan lu saat ini"
+	}
+
+	parts := strings.Fields(args)
+	subcmd := strings.ToLower(parts[0])
+
+	switch subcmd {
+	case "add":
+		if len(parts) < 4 {
+			return "⚠️ Format salah. Gunakan: `/goal add <nama> <jumlah> <deadline>`\n_Contoh: `/goal add Beli Laptop 12jt 2026-12-31`_"
+		}
+		
+		deadlineStr := parts[len(parts)-1]
+		amountStr := parts[len(parts)-2]
+		nameParts := parts[1 : len(parts)-2]
+		name := strings.Join(nameParts, " ")
+
+		deadline, err := parseDeadline(deadlineStr)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Deadline tidak valid: %v", err)
+		}
+
+		amount, err := parseAmount(amountStr)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Jumlah target tidak valid: %v", err)
+		}
+
+		reply, err := h.finance.AddGoal(telegramID, name, amount, deadline)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Gagal menambahkan target keuangan: %v", err)
+		}
+		return reply
+
+	case "status":
+		reply, err := h.finance.GetGoalStatus(telegramID)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Gagal memanggil status target keuangan: %v", err)
+		}
+		return reply
+
+	default:
+		return "⚠️ Perintah tidak dikenal. Gunakan `/goal add` atau `/goal status`."
 	}
 }

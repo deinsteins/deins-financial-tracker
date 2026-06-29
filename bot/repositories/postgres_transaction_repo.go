@@ -98,3 +98,15 @@ func (r *postgresTransactionRepository) queryTransactions(query string, args ...
 
 	return transactions, nil
 }
+
+func (r *postgresTransactionRepository) GetNetSavings(userID string) (int64, error) {
+	query := `SELECT COALESCE(SUM(CASE WHEN type = 'income' THEN amount ELSE -amount END), 0) 
+	          FROM transactions 
+	          WHERE user_id = $1`
+	var netSavings int64
+	err := r.pool.QueryRow(context.Background(), query, userID).Scan(&netSavings)
+	if err != nil {
+		return 0, fmt.Errorf("postgres_transaction_repo: failed to calculate net savings: %w", err)
+	}
+	return netSavings, nil
+}

@@ -39,3 +39,12 @@ type ChatMessage struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type Goal struct {
+	ID           string    `json:"id"`
+	UserID       string    `json:"user_id"`
+	Name         string    `json:"name"`
+	TargetAmount int64     `json:"target_amount"`
+	Deadline     time.Time `json:"deadline"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+

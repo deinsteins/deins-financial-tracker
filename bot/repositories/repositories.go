@@ -15,6 +15,7 @@ type TransactionRepository interface {
 	GetByUserID(userID string) ([]*models.Transaction, error)
 	GetToday(userID string, tz string) ([]*models.Transaction, error)
 	GetMonth(userID string, tz string) ([]*models.Transaction, error)
+	GetNetSavings(userID string) (int64, error)
 }
 
 type ReportRepository interface {
@@ -26,6 +27,11 @@ type BudgetRepository interface {
 	SetLimit(userID string, category string, amount int64) error
 	GetLimits(userID string) (map[string]int64, error)
 	GetLimit(userID string, category string) (int64, error)
+}
+
+type GoalRepository interface {
+	Create(goal *models.Goal) error
+	GetByUserID(userID string) ([]*models.Goal, error)
 }
 
 type ChatMemoryRepository interface {

@@ -24,6 +24,8 @@ type FinanceService interface {
 	SetCategoryBudget(telegramID int64, category string, amount int64) (string, error)
 	GetBudgetStatus(telegramID int64) (string, error)
 	CheckBudgetAlerts(telegramID int64, category string) (string, error)
+	AddGoal(telegramID int64, name string, targetAmount int64, deadline time.Time) (string, error)
+	GetGoalStatus(telegramID int64) (string, error)
 	GetChatHistory(telegramID int64) ([]llm.Message, error)
 	SaveChatHistory(telegramID int64, role, content string) error
 }
@@ -34,6 +36,7 @@ type financeService struct {
 	txRepo        repositories.TransactionRepository
 	repRepo       repositories.ReportRepository
 	budgetRepo    repositories.BudgetRepository
+	goalRepo      repositories.GoalRepository
 	chatMemoryRepo repositories.ChatMemoryRepository
 	loc           *time.Location
 }
@@ -44,6 +47,7 @@ func NewFinanceService(
 	txRepo repositories.TransactionRepository,
 	repRepo repositories.ReportRepository,
 	budgetRepo repositories.BudgetRepository,
+	goalRepo repositories.GoalRepository,
 	chatMemoryRepo repositories.ChatMemoryRepository,
 ) FinanceService {
 	tz := os.Getenv("TZ")
@@ -61,6 +65,7 @@ func NewFinanceService(
 		txRepo:        txRepo,
 		repRepo:       repRepo,
 		budgetRepo:    budgetRepo,
+		goalRepo:      goalRepo,
 		chatMemoryRepo: chatMemoryRepo,
 		loc:           loc,
 	}
@@ -541,4 +546,106 @@ func (s *financeService) SaveChatHistory(telegramID int64, role, content string)
 		return fmt.Errorf("failed to append chat message: %w", err)
 	}
 	return nil
+}
+
+func (s *financeService) AddGoal(telegramID int64, name string, targetAmount int64, deadline time.Time) (string, error) {
+	user, err := s.getOrCreateUser(telegramID, "Telegram User")
+	if err != nil {
+		return "", err
+	}
+
+	goal := &models.Goal{
+		UserID:       user.ID,
+		Name:         name,
+		TargetAmount: targetAmount,
+		Deadline:     deadline,
+	}
+
+	err = s.goalRepo.Create(goal)
+	if err != nil {
+		return "", fmt.Errorf("failed to create goal: %w", err)
+	}
+
+	formattedAmount := formatIDRCurrency(targetAmount)
+	formattedDate := deadline.In(s.loc).Format("02 Jan 2006")
+	return fmt.Sprintf("🎯 *Target Keuangan Baru Berhasil Ditambahkan!* 🎉\n\n"+
+		"• *Nama*: %s\n"+
+		"• *Target*: %s\n"+
+		"• *Deadline*: %s\n\n"+
+		"💾 _Semangat nabung bro, gua bantu pantau progress-nya!_", name, formattedAmount, formattedDate), nil
+}
+
+func (s *financeService) GetGoalStatus(telegramID int64) (string, error) {
+	user, err := s.getOrCreateUser(telegramID, "Telegram User")
+	if err != nil {
+		return "", err
+	}
+
+	// 1. Fetch all goals
+	goals, err := s.goalRepo.GetByUserID(user.ID)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch goals: %w", err)
+	}
+
+	if len(goals) == 0 {
+		return "🎯 *Belum ada target keuangan yang disetel nih bro.*\nGunain perintah `/goal add <nama> <jumlah> <deadline>` untuk menambah target.", nil
+	}
+
+	// 2. Fetch total net savings (income - expense)
+	netSavings, err := s.txRepo.GetNetSavings(user.ID)
+	if err != nil {
+		return "", fmt.Errorf("failed to calculate net savings: %w", err)
+	}
+
+	var statusMsg strings.Builder
+	statusMsg.WriteString("🎯 *Status Target Keuangan Lu*\n\n")
+
+	now := time.Now().In(s.loc)
+	remainingNet := netSavings
+
+	for i, goal := range goals {
+		// Calculate remaining months
+		remainingMonths := (goal.Deadline.Year()-now.Year())*12 + int(goal.Deadline.Month()-now.Month())
+		if remainingMonths <= 0 {
+			remainingMonths = 1
+		}
+
+		// Calculate progress allocated from net savings (waterfall)
+		var progress int64
+		if remainingNet >= goal.TargetAmount {
+			progress = goal.TargetAmount
+			remainingNet -= goal.TargetAmount
+		} else if remainingNet > 0 {
+			progress = remainingNet
+			remainingNet = 0
+		} else {
+			progress = 0
+		}
+
+		pct := (float64(progress) / float64(goal.TargetAmount)) * 100
+
+		// Calculate required monthly saving for the remaining target
+		neededAmount := goal.TargetAmount - progress
+		var monthlySaving int64
+		if neededAmount > 0 {
+			monthlySaving = neededAmount / int64(remainingMonths)
+		}
+
+		status := "⏳ _Sedang berjalan_"
+		if progress >= goal.TargetAmount {
+			status = "🎉 *Tercapai!*"
+		}
+
+		deadlineStr := goal.Deadline.In(s.loc).Format("02 Jan 2006")
+		statusMsg.WriteString(fmt.Sprintf("%d. *%s* %s\n"+
+			"   • *Progress*: %s / %s (%.1f%%)\n"+
+			"   • *Deadline*: %s (%d bulan lagi)\n"+
+			"   • *Saran Menabung*: %s / bulan\n\n",
+			i+1, goal.Name, status,
+			formatIDRCurrency(progress), formatIDRCurrency(goal.TargetAmount), pct,
+			deadlineStr, remainingMonths, formatIDRCurrency(monthlySaving)))
+	}
+
+	statusMsg.WriteString(fmt.Sprintf("💰 *Total Net Tabungan Saat Ini*: %s", formatIDRCurrency(netSavings)))
+	return statusMsg.String(), nil
 }
