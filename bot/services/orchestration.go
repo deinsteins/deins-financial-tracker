@@ -28,7 +28,8 @@ func NewOrchestrationService(client llm.HermesClient, registry *llm.Registry, fi
 func (s *orchestrationService) registerTools(finance FinanceService) {
 	s.registry.Register(&llm.SaveTransactionTool{
 		Handler: func(ctx context.Context, telegramID int64, args *llm.SaveTransactionArgs) (interface{}, error) {
-			return finance.AddTransaction(telegramID, args.Type, args.Category, args.Amount, args.Description)
+			walletName, _ := ctx.Value("wallet").(string)
+			return finance.AddTransaction(telegramID, args.Type, args.Category, args.Amount, args.Description, walletName)
 		},
 	})
 	s.registry.Register(&llm.GetTodaySummaryTool{

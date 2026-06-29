@@ -66,13 +66,14 @@ func main() {
 	repRepo := repositories.NewPostgresReportRepository(dbPool)
 	budgetRepo := repositories.NewPostgresBudgetRepository(dbPool)
 	goalRepo := repositories.NewPostgresGoalRepository(dbPool)
+	walletRepo := repositories.NewPostgresWalletRepository(dbPool)
 	chatMemoryRepo := repositories.NewPostgresChatMemoryRepository(dbPool)
 
 	// Initialize AI Client
 	aiClient := services.NewAIClient(cfg.AIServiceURL)
 
 	// Initialize services with repository injections
-	financeSvc := services.NewFinanceService(aiClient, userRepo, txRepo, repRepo, budgetRepo, goalRepo, chatMemoryRepo)
+	financeSvc := services.NewFinanceService(aiClient, userRepo, txRepo, repRepo, budgetRepo, goalRepo, walletRepo, chatMemoryRepo)
 
 	// Initialize Hermes LLM Client and Orchestration Service
 	// Resolve LLM parameters with support for LLM_BASE_URL env setting

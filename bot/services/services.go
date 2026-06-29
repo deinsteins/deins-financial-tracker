@@ -14,7 +14,7 @@ import (
 
 type FinanceService interface {
 	RegisterUser(telegramID int64, name string) (*models.User, error)
-	AddTransaction(telegramID int64, txType, category string, amount int64, desc string) (*models.Transaction, error)
+	AddTransaction(telegramID int64, txType, category string, amount int64, desc string, walletName string) (*models.Transaction, error)
 	GetTodaySummary(telegramID int64) (string, error)
 	GetMonthSummary(telegramID int64) (string, error)
 	AnalyzeText(telegramID int64, text string) (string, error)
@@ -26,19 +26,21 @@ type FinanceService interface {
 	CheckBudgetAlerts(telegramID int64, category string) (string, error)
 	AddGoal(telegramID int64, name string, targetAmount int64, deadline time.Time) (string, error)
 	GetGoalStatus(telegramID int64) (string, error)
+	GetWalletBalances(telegramID int64) (string, error)
 	GetChatHistory(telegramID int64) ([]llm.Message, error)
 	SaveChatHistory(telegramID int64, role, content string) error
 }
 
 type financeService struct {
-	ai            AIClient
-	userRepo      repositories.UserRepository
-	txRepo        repositories.TransactionRepository
-	repRepo       repositories.ReportRepository
-	budgetRepo    repositories.BudgetRepository
-	goalRepo      repositories.GoalRepository
+	ai             AIClient
+	userRepo       repositories.UserRepository
+	txRepo         repositories.TransactionRepository
+	repRepo        repositories.ReportRepository
+	budgetRepo     repositories.BudgetRepository
+	goalRepo       repositories.GoalRepository
+	walletRepo     repositories.WalletRepository
 	chatMemoryRepo repositories.ChatMemoryRepository
-	loc           *time.Location
+	loc            *time.Location
 }
 
 func NewFinanceService(
@@ -48,6 +50,7 @@ func NewFinanceService(
 	repRepo repositories.ReportRepository,
 	budgetRepo repositories.BudgetRepository,
 	goalRepo repositories.GoalRepository,
+	walletRepo repositories.WalletRepository,
 	chatMemoryRepo repositories.ChatMemoryRepository,
 ) FinanceService {
 	tz := os.Getenv("TZ")
@@ -60,14 +63,15 @@ func NewFinanceService(
 	}
 
 	return &financeService{
-		ai:            ai,
-		userRepo:      userRepo,
-		txRepo:        txRepo,
-		repRepo:       repRepo,
-		budgetRepo:    budgetRepo,
-		goalRepo:      goalRepo,
+		ai:             ai,
+		userRepo:       userRepo,
+		txRepo:         txRepo,
+		repRepo:        repRepo,
+		budgetRepo:     budgetRepo,
+		goalRepo:       goalRepo,
+		walletRepo:     walletRepo,
 		chatMemoryRepo: chatMemoryRepo,
-		loc:           loc,
+		loc:            loc,
 	}
 }
 
@@ -94,6 +98,12 @@ func (s *financeService) getOrCreateUser(telegramID int64, name string) (*models
 		return nil, fmt.Errorf("error creating user: %w", err)
 	}
 
+	// Create default wallets
+	err = s.walletRepo.CreateDefaultWallets(newUser.ID)
+	if err != nil {
+		log.Printf("ERROR: failed to create default wallets: %v", err)
+	}
+
 	return newUser, nil
 }
 
@@ -101,10 +111,20 @@ func (s *financeService) RegisterUser(telegramID int64, name string) (*models.Us
 	return s.getOrCreateUser(telegramID, name)
 }
 
-func (s *financeService) AddTransaction(telegramID int64, txType, category string, amount int64, desc string) (*models.Transaction, error) {
+func (s *financeService) AddTransaction(telegramID int64, txType, category string, amount int64, desc string, walletName string) (*models.Transaction, error) {
 	user, err := s.getOrCreateUser(telegramID, "Telegram User")
 	if err != nil {
 		return nil, err
+	}
+
+	walletName = strings.TrimSpace(walletName)
+	if walletName == "" {
+		walletName = "cash"
+	}
+
+	wallet, err := s.walletRepo.EnsureWallet(user.ID, walletName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to ensure wallet '%s': %w", walletName, err)
 	}
 
 	tx := &models.Transaction{
@@ -113,11 +133,22 @@ func (s *financeService) AddTransaction(telegramID int64, txType, category strin
 		Category:    category,
 		Amount:      amount,
 		Description: desc,
+		WalletID:    &wallet.ID,
 	}
 
 	err = s.txRepo.Create(tx)
 	if err != nil {
 		return nil, err
+	}
+
+	// Update/Deduct balance
+	balanceOffset := amount
+	if txType == "expense" {
+		balanceOffset = -amount
+	}
+	err = s.walletRepo.UpdateBalance(wallet.ID, balanceOffset)
+	if err != nil {
+		log.Printf("ERROR: failed to update wallet balance: %v", err)
 	}
 
 	return tx, nil
@@ -274,21 +305,32 @@ func (s *financeService) AnalyzeText(telegramID int64, text string) (string, err
 }
 
 func formatIDRCurrency(amount int64) string {
-	s := fmt.Sprintf("%d", amount)
-	if len(s) <= 3 {
-		return "Rp " + s
+	isNegative := amount < 0
+	if isNegative {
+		amount = -amount
 	}
 
-	var res []byte
-	n := 0
-	for i := len(s) - 1; i >= 0; i-- {
-		if n > 0 && n%3 == 0 {
-			res = append([]byte{'.'}, res...)
+	s := fmt.Sprintf("%d", amount)
+	var res string
+	if len(s) <= 3 {
+		res = s
+	} else {
+		var bytes []byte
+		n := 0
+		for i := len(s) - 1; i >= 0; i-- {
+			if n > 0 && n%3 == 0 {
+				bytes = append([]byte{'.'}, bytes...)
+			}
+			bytes = append([]byte{s[i]}, bytes...)
+			n++
 		}
-		res = append([]byte{s[i]}, res...)
-		n++
+		res = string(bytes)
 	}
-	return "Rp " + string(res)
+
+	if isNegative {
+		return "-Rp " + res
+	}
+	return "Rp " + res
 }
 
 func (s *financeService) GenerateAIAnalysis(telegramID int64) (string, error) {
@@ -648,4 +690,23 @@ func (s *financeService) GetGoalStatus(telegramID int64) (string, error) {
 
 	statusMsg.WriteString(fmt.Sprintf("💰 *Total Net Tabungan Saat Ini*: %s", formatIDRCurrency(netSavings)))
 	return statusMsg.String(), nil
+}
+
+func (s *financeService) GetWalletBalances(telegramID int64) (string, error) {
+	user, err := s.getOrCreateUser(telegramID, "Telegram User")
+	if err != nil {
+		return "", err
+	}
+
+	wallets, err := s.walletRepo.GetByUserID(user.ID)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch wallets: %w", err)
+	}
+
+	var msg strings.Builder
+	msg.WriteString("👛 *Saldo Dompet Lu*\n\n")
+	for _, w := range wallets {
+		msg.WriteString(fmt.Sprintf("• *%s*: %s\n", w.Name, formatIDRCurrency(w.Balance)))
+	}
+	return msg.String(), nil
 }

@@ -19,6 +19,7 @@ type Transaction struct {
 	Category        string    `json:"category"`
 	Amount          int64     `json:"amount"` // in cents
 	Description     string    `json:"description"`
+	WalletID        *string   `json:"wallet_id,omitempty"`
 	TransactionDate time.Time `json:"transaction_date"`
 	CreatedAt       time.Time `json:"created_at"`
 }
@@ -46,5 +47,13 @@ type Goal struct {
 	TargetAmount int64     `json:"target_amount"`
 	Deadline     time.Time `json:"deadline"`
 	CreatedAt    time.Time `json:"created_at"`
+}
+
+type Wallet struct {
+	ID        string    `json:"id"`
+	UserID    string    `json:"user_id"`
+	Name      string    `json:"name"`
+	Balance   int64     `json:"balance"`
+	CreatedAt time.Time `json:"created_at"`
 }
 

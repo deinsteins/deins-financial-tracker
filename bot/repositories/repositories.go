@@ -34,6 +34,13 @@ type GoalRepository interface {
 	GetByUserID(userID string) ([]*models.Goal, error)
 }
 
+type WalletRepository interface {
+	CreateDefaultWallets(userID string) error
+	EnsureWallet(userID string, name string) (*models.Wallet, error)
+	UpdateBalance(walletID string, amount int64) error
+	GetByUserID(userID string) ([]*models.Wallet, error)
+}
+
 type ChatMemoryRepository interface {
 	Append(userID string, role string, content string) error
 	GetLastN(userID string, n int) ([]*models.ChatMessage, error)

@@ -70,6 +70,7 @@ func (h *BotHandler) handleCommand(msg *tgbotapi.Message) {
 			"/budget status - Cek status budget pengeluaran lu\n"+
 			"/goal add <nama> <jumlah> <deadline> - Set target keuangan baru\n"+
 			"/goal status - Cek progress target keuangan lu\n"+
+			"/wallets - Cek saldo dompet (cash, bank, ewallet, etc.)\n"+
 			"/analyze - Minta AI buatin analisis keuangan lu\n\n"+
 			"Atau langsung ketik aja transaksi lu, contoh: 'makan bakso 25rb'. Nanti gua catetin!", msg.From.FirstName)
 
@@ -91,6 +92,12 @@ func (h *BotHandler) handleCommand(msg *tgbotapi.Message) {
 	case "goal":
 		replyText = h.handleGoalCommand(msg.From.ID, msg.CommandArguments())
 
+	case "wallet", "wallets":
+		replyText, err = h.finance.GetWalletBalances(msg.From.ID)
+		if err != nil {
+			replyText = fmt.Sprintf("⚠️ *Gagal mengambil saldo dompet:*\n%v", err)
+		}
+
 	case "analyze":
 		replyText, err = h.finance.GenerateAIAnalysis(msg.From.ID)
 		if err != nil {
@@ -110,6 +117,29 @@ func (h *BotHandler) handleTextMessage(msg *tgbotapi.Message) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	// Extract target wallet if any
+	rawText := msg.Text
+	words := strings.Fields(rawText)
+	var detectedWallet string
+	var textToParse = rawText
+
+	if len(words) > 0 {
+		firstWord := strings.ToLower(words[0])
+		switch firstWord {
+		case "cash", "tunai", "dompet":
+			detectedWallet = "cash"
+		case "bank", "bca", "mandiri", "cimb", "bni", "bri", "jago":
+			detectedWallet = firstWord
+		case "ewallet", "ovo", "gopay", "dana", "linkaja", "shopeepay":
+			detectedWallet = firstWord
+		}
+
+		if detectedWallet != "" {
+			textToParse = strings.TrimSpace(strings.TrimPrefix(rawText, words[0]))
+			ctx = context.WithValue(ctx, "wallet", detectedWallet)
+		}
+	}
+
 	// 1. Fetch conversational history memory context
 	history, err := h.finance.GetChatHistory(msg.From.ID)
 	if err != nil {
@@ -117,7 +147,7 @@ func (h *BotHandler) handleTextMessage(msg *tgbotapi.Message) {
 		history = nil // fallback to empty context
 	}
 
-	intent, err := h.orchestration.ParseIntent(ctx, history, msg.Text)
+	intent, err := h.orchestration.ParseIntent(ctx, history, textToParse)
 	if err != nil {
 		replyText := fmt.Sprintf("⚠️ *Waduh, gagal memproses perintah lewat Hermes:*\n%v", err)
 		h.sendReply(msg.Chat.ID, replyText, msg.MessageID)
@@ -150,12 +180,17 @@ func (h *BotHandler) handleTextMessage(msg *tgbotapi.Message) {
 				if tx.Type == "income" {
 					typeEmoji = "💰 pemasukan"
 				}
+				walletName := "cash"
+				if detectedWallet != "" {
+					walletName = detectedWallet
+				}
 				replyText += fmt.Sprintf("✅ *Catatan Berhasil Disimpan!* 🎉\n\n"+
 					"• *Tipe*: %s\n"+
 					"• *Kategori*: %s\n"+
 					"• *Jumlah*: %s\n"+
+					"• *Dompet*: %s\n"+
 					"• *Deskripsi*: %s\n\n",
-					typeEmoji, tx.Category, formatIDRCurrency(tx.Amount), tx.Description)
+					typeEmoji, tx.Category, formatIDRCurrency(tx.Amount), walletName, tx.Description)
 
 				// Proactively check and append budget alerts
 				if tx.Type == "expense" {
@@ -253,21 +288,32 @@ func (h *BotHandler) sendReply(chatID int64, text string, replyToMessageID int) 
 }
 
 func formatIDRCurrency(amount int64) string {
-	s := fmt.Sprintf("%d", amount)
-	if len(s) <= 3 {
-		return "Rp " + s
+	isNegative := amount < 0
+	if isNegative {
+		amount = -amount
 	}
 
-	var res []byte
-	n := 0
-	for i := len(s) - 1; i >= 0; i-- {
-		if n > 0 && n%3 == 0 {
-			res = append([]byte{'.'}, res...)
+	s := fmt.Sprintf("%d", amount)
+	var res string
+	if len(s) <= 3 {
+		res = s
+	} else {
+		var bytes []byte
+		n := 0
+		for i := len(s) - 1; i >= 0; i-- {
+			if n > 0 && n%3 == 0 {
+				bytes = append([]byte{'.'}, bytes...)
+			}
+			bytes = append([]byte{s[i]}, bytes...)
+			n++
 		}
-		res = append([]byte{s[i]}, res...)
-		n++
+		res = string(bytes)
 	}
-	return "Rp " + string(res)
+
+	if isNegative {
+		return "-Rp " + res
+	}
+	return "Rp " + res
 }
 
 func parseAmount(s string) (int64, error) {
