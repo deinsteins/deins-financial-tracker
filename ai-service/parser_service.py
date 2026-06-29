@@ -19,6 +19,12 @@ class ParsedTransaction(BaseModel):
 class AnalyzeResponse(BaseModel):
     summary: str = Field(..., description="Concise paragraph summary of the user financial health and spending patterns in casual Indonesian")
     insights: list[str] = Field(..., description="List of actionable insights and observations in casual Indonesian")
+    anomalies: list[str] = Field(default=[], description="Detected spending anomalies (unusually high expenses) in casual Indonesian")
+    wasteful_spending: list[str] = Field(default=[], description="Detected wasteful spending (frequent small or unnecessary expenses) in casual Indonesian")
+    highest_spending_day: str = Field(default="", description="The day with highest spending, formatted nicely (e.g. 'Senin, 15 Jun 2026 sebesar Rp 500.000')")
+    trends: list[str] = Field(default=[], description="Category trend increases or decreases compared to previous transactions in casual Indonesian")
+    saving_recommendations: list[str] = Field(default=[], description="Actionable saving recommendations in casual Indonesian")
+    financial_score: int = Field(default=80, description="Financial score from 0 to 100 based on their savings rate, budgeting, and spending habits")
 
 def normalize_indonesian_currency(text: str) -> str:
     """
@@ -110,52 +116,125 @@ def fallback_parse(text: str) -> dict:
 def fallback_analyze(transactions: list) -> dict:
     """
     Rule-based fallback analyzer in friendly conversational Indonesian.
+    Calculates anomalies, wasteful spending, highest-spending day, trends, recommendations, and financial score.
     """
     if not transactions:
         return {
             "summary": "Belum ada catatan riwayat transaksi nih bro buat dianalisis.",
-            "insights": ["Yuk langsung catat aja pengeluaran/pemasukan lu biar nanti gua kasih analisis gokil!"]
+            "insights": ["Yuk langsung catat aja pengeluaran/pemasukan lu biar nanti gua kasih analisis gokil!"],
+            "anomalies": [],
+            "wasteful_spending": [],
+            "highest_spending_day": "Belum ada data",
+            "trends": [],
+            "saving_recommendations": ["Sisihin minimal 10% pendapatan pas gajian."],
+            "financial_score": 50
         }
     
     total_income = sum(tx.get("amount", 0) for tx in transactions if tx.get("type") == "income")
     total_expense = sum(tx.get("amount", 0) for tx in transactions if tx.get("type") == "expense")
     
-    cat_expenses = {}
+    # 1. Highest Spending Day
+    daily_spending = {}
     for tx in transactions:
         if tx.get("type") == "expense":
-            cat = tx.get("category", "other")
-            cat_expenses[cat] = cat_expenses.get(cat, 0) + tx.get("amount", 0)
+            dt_str = tx.get("transaction_date") or tx.get("created_at") or ""
+            if dt_str:
+                date_key = dt_str[:10]
+                daily_spending[date_key] = daily_spending.get(date_key, 0) + tx.get("amount", 0)
+    
+    highest_day = "Belum ada data pengeluaran"
+    if daily_spending:
+        max_date = max(daily_spending, key=daily_spending.get)
+        max_amount = daily_spending[max_date]
+        try:
+            dt = datetime.fromisoformat(max_date.replace('Z', '+00:00'))
+            formatted_date = dt.strftime('%A, %d %b %Y')
+            days_id = {'Monday': 'Senin', 'Tuesday': 'Selasa', 'Wednesday': 'Rabu', 'Thursday': 'Kamis', 'Friday': 'Jumat', 'Saturday': 'Sabtu', 'Sunday': 'Minggu'}
+            months_id = {'Jan': 'Jan', 'Feb': 'Feb', 'Mar': 'Mar', 'Apr': 'Apr', 'May': 'Mei', 'Jun': 'Jun', 'Jul': 'Jul', 'Aug': 'Agu', 'Sep': 'Sep', 'Oct': 'Okt', 'Nov': 'Nov', 'Dec': 'Des'}
+            for en, idr in days_id.items():
+                formatted_date = formatted_date.replace(en, idr)
+            for en, idr in months_id.items():
+                formatted_date = formatted_date.replace(en, idr)
+            highest_day = f"{formatted_date} sebesar Rp {max_amount:,}"
+        except Exception:
+            highest_day = f"{max_date} sebesar Rp {max_amount:,}"
+
+    # 2. Spend Anomalies (expenses > 500,000 or > 2x average expense)
+    expenses = [tx for tx in transactions if tx.get("type") == "expense"]
+    avg_expense = sum(tx.get("amount", 0) for tx in expenses) / len(expenses) if expenses else 0
+    anomalies = []
+    for tx in expenses:
+        amt = tx.get("amount", 0)
+        if amt > 500000 or (avg_expense > 0 and amt > 2.5 * avg_expense):
+            anomalies.append(f"Pembelian '{tx.get('description')}' senilai Rp {amt:,} ini lumayan gede dibanding rata-rata belanja lu bro.")
+
+    # 3. Wasteful Spending (Frequent small expenses under food/entertainment or description pattern)
+    desc_counts = {}
+    for tx in expenses:
+        desc = tx.get("description", "").lower()
+        if desc:
+            desc_counts[desc] = desc_counts.get(desc, 0) + 1
             
+    wasteful = []
+    for desc, count in desc_counts.items():
+        if count >= 3:
+            item_total = sum(tx.get("amount", 0) for tx in expenses if tx.get("description", "").lower() == desc)
+            wasteful.append(f"Belanja '{desc}' berulang sampai {count} kali (total Rp {item_total:,}). Hati-hati bocor alus nih!")
+
+    # 4. Trends
+    trends = []
+    cat_expenses = {}
+    for tx in expenses:
+        cat = tx.get("category", "other")
+        cat_expenses[cat] = cat_expenses.get(cat, 0) + tx.get("amount", 0)
+        
     biggest_category = "None"
     biggest_amount = 0
     if cat_expenses:
         biggest_category = max(cat_expenses, key=cat_expenses.get)
         biggest_amount = cat_expenses[biggest_category]
-        
+        trends.append(f"Kategori '{biggest_category}' lagi mendominasi pengeluaran lu bulan ini (Rp {biggest_amount:,}).")
+
+    # 5. Financial Score and saving rate recommendations
+    savings_rate = 0
+    financial_score = 50
+    if total_income > 0:
+        savings = total_income - total_expense
+        savings_rate = (savings / total_income) * 100
+        financial_score = int(50 + (savings_rate / 2))
+        financial_score = max(0, min(100, financial_score))
+    elif total_expense > 0:
+        financial_score = max(10, 50 - int(total_expense / 100000))
+        financial_score = max(5, min(95, financial_score))
+
+    recs = []
+    if savings_rate < 10:
+        recs.append("Coba batasi belanja tersier (jajan, kopi, belanja online) maksimal 20% dari pemasukan.")
+        recs.append("Tabung/investasikan dana minimal 10% di awal bulan sebelum dipakai belanja.")
+    else:
+        recs.append("Tabungan lu udah oke! Coba alokasikan sebagian ke reksa dana atau investasi lainnya.")
+        recs.append("Buat dana darurat setara 3-6 kali pengeluaran bulanan lu.")
+
     summary = (
         f"Nih ringkasan dana lu bro: total pemasukan lu ada Rp {total_income:,}, terus pengeluaran lu totalnya Rp {total_expense:,}. "
-        f"Nah, pengeluaran lu paling banyak boncos di kategori '{biggest_category}' yaitu Rp {biggest_amount:,}."
+        f"Kondisi keuangan lu dapet skor {financial_score}/100."
     )
-    
-    insights = []
-    insights.append(f"Pola belanja lu nih: Area jajan paling gede ada di '{biggest_category}' (Rp {biggest_amount:,}). Coba agak dikontrol ya bro!")
-    
+
+    insights = [
+        f"Pola belanja lu nih: Area jajan paling gede ada di '{biggest_category}' (Rp {biggest_amount:,})."
+    ]
     if total_expense > total_income:
-        insights.append("Duh bahaya nih! Pengeluaran lu lebih gede dari pemasukan bulan ini. Coba kurangin belanjaan yang kurang penting, yuk bisa yuk!")
-    else:
-        savings = total_income - total_expense
-        savings_rate = int((savings / total_income) * 100) if total_income > 0 else 0
-        insights.append(f"Tips hemat: Lu berhasil nabung Rp {savings:,} (savings rate: {savings_rate}%). Gokil! Coba deh otomatisasi sisihin minimal 10% di awal pas gajian.")
-        
-    # Check for large transactions (e.g. > 500,000)
-    large_txs = [tx for tx in transactions if tx.get("type") == "expense" and tx.get("amount", 0) > 500000]
-    if large_txs:
-        tx_desc = [f"'{tx.get('description')}' (Rp {tx.get('amount'):,})" for tx in large_txs]
-        insights.append(f"Deteksi aneh nih: Ada transaksi lumayan gede nih bro: {', '.join(tx_desc)}.")
-        
+        insights.append("Duh bahaya nih! Pengeluaran lu lebih gede dari pemasukan bulan ini.")
+
     return {
         "summary": summary,
-        "insights": insights
+        "insights": insights,
+        "anomalies": anomalies,
+        "wasteful_spending": wasteful,
+        "highest_spending_day": highest_day,
+        "trends": trends,
+        "saving_recommendations": recs,
+        "financial_score": financial_score
     }
 
 class ParserService:
@@ -311,25 +390,31 @@ Return ONLY a JSON object. Do not wrap in markdown tags like ```json.
 
                 system_prompt = "You are a expert personal finance advisor."
                 prompt = f"""
-Analyze the following list of user transactions and generate:
-1. Spending pattern analysis
-2. Biggest expense category
-3. Unusual spending detection (outliers, sudden jumps, high frequency of specific items)
-4. Saving recommendations
+Analyze the following list of user transactions and generate spending analysis metrics:
+1. summary: A friendly paragraph summarizing their financial health and spending patterns in casual Indonesian.
+2. insights: List of observations and tips.
+3. anomalies: List of unusually high or sudden spikes in spending.
+4. wasteful_spending: List of frequent small or unnecessary spending items (like ordering coffee/camilan too often).
+5. highest_spending_day: The single day with the highest total expenses, formatted nicely (e.g. "Senin, 15 Jun 2026 sebesar Rp 500.000").
+6. trends: Any category spending trend increases or decreases.
+7. saving_recommendations: Practical saving recommendations.
+8. financial_score: An integer from 0 to 100 based on their savings rate, budgeting, and habits.
 
-**Crucial Constraint**: Write all output values (the "summary" paragraph and each string in the "insights" array) in informal/casual Indonesian (Bahasa Indonesia gaul/santai, using terms like "lu", "gua", "nih", "bro", "sist", "lho", "coba deh", "yuk", "boncos", "hemat"). Speak like a close supportive friend advising them on their money. Keep the tone warm, supportive, and highly conversational.
+**Crucial Constraint**: Write all output text values (summary, insights, anomalies, wasteful_spending, trends, saving_recommendations) in informal/casual Indonesian (Bahasa Indonesia gaul/santai, using terms like "lu", "gua", "nih", "bro", "sist", "lho", "coba deh", "yuk", "boncos", "hemat"). Speak like a close supportive friend advising them on their money. Keep the tone warm, supportive, and highly conversational.
 
 Transactions List:
 {txs_formatted}
 
 Return a JSON object conforming exactly to this structure:
 {{
-  "summary": "A friendly paragraph summarizing their financial health and spending patterns in casual Indonesian.",
-  "insights": [
-    "Insight 1: Casual Indonesian observation about spending patterns or the biggest expense category.",
-    "Insight 2: Casual Indonesian check/warning about unusual spending or high-cost transactions.",
-    "Insight 3: A concrete actionable recommendation in casual Indonesian on how they can save money."
-  ]
+  "summary": "...",
+  "insights": ["..."],
+  "anomalies": ["..."],
+  "wasteful_spending": ["..."],
+  "highest_spending_day": "...",
+  "trends": ["..."],
+  "saving_recommendations": ["..."],
+  "financial_score": 80
 }}
 
 Return ONLY the raw JSON object. Do not wrap in markdown tags.
@@ -361,25 +446,31 @@ Return ONLY the raw JSON object. Do not wrap in markdown tags.
             txs_formatted = "\n".join(tx_lines)
 
             prompt = f"""
-You are a expert personal finance advisor. Analyze the following list of user transactions and generate:
-1. Spending pattern analysis
-2. Biggest expense category
-3. Unusual spending detection (outliers, sudden jumps, high frequency of specific items)
-4. Saving recommendations
+Analyze the following list of user transactions and generate spending analysis metrics:
+1. summary: A friendly paragraph summarizing their financial health and spending patterns in casual Indonesian.
+2. insights: List of observations and tips.
+3. anomalies: List of unusually high or sudden spikes in spending.
+4. wasteful_spending: List of frequent small or unnecessary spending items (like ordering coffee/camilan too often).
+5. highest_spending_day: The single day with the highest total expenses, formatted nicely (e.g. "Senin, 15 Jun 2026 sebesar Rp 500.000").
+6. trends: Any category spending trend increases or decreases.
+7. saving_recommendations: Practical saving recommendations.
+8. financial_score: An integer from 0 to 100 based on their savings rate, budgeting, and habits.
 
-**Crucial Constraint**: Write all output values (the "summary" paragraph and each string in the "insights" array) in informal/casual Indonesian (Bahasa Indonesia gaul/santai, using terms like "lu", "gua", "nih", "bro", "sist", "lho", "coba deh", "yuk", "boncos", "hemat"). Speak like a close supportive friend advising them on their money. Keep the tone warm, supportive, and highly conversational.
+**Crucial Constraint**: Write all output text values (summary, insights, anomalies, wasteful_spending, trends, saving_recommendations) in informal/casual Indonesian (Bahasa Indonesia gaul/santai, using terms like "lu", "gua", "nih", "bro", "sist", "lho", "coba deh", "yuk", "boncos", "hemat"). Speak like a close supportive friend advising them on their money. Keep the tone warm, supportive, and highly conversational.
 
 Transactions List:
 {txs_formatted}
 
 Return a JSON object conforming exactly to this structure:
 {{
-  "summary": "A friendly paragraph summarizing their financial health and spending patterns in casual Indonesian.",
-  "insights": [
-    "Insight 1: Casual Indonesian observation about spending patterns or the biggest expense category.",
-    "Insight 2: Casual Indonesian check/warning about unusual spending or high-cost transactions.",
-    "Insight 3: A concrete actionable recommendation in casual Indonesian on how they can save money."
-  ]
+  "summary": "...",
+  "insights": ["..."],
+  "anomalies": ["..."],
+  "wasteful_spending": ["..."],
+  "highest_spending_day": "...",
+  "trends": ["..."],
+  "saving_recommendations": ["..."],
+  "financial_score": 80
 }}
 
 Return ONLY the JSON object. Do not wrap in markdown tags.

@@ -357,17 +357,54 @@ func (s *financeService) GenerateAIAnalysis(telegramID int64) (string, error) {
 		return "", fmt.Errorf("AI Analisis gagal nih bro: %w", err)
 	}
 
-	insightsStr := ""
-	for _, insight := range analysis.Insights {
-		insightsStr += fmt.Sprintf("• %s\n", insight)
+	anomaliesStr := "• _Tidak terdeteksi anomali pengeluaran_\n"
+	if len(analysis.Anomalies) > 0 {
+		anomaliesStr = ""
+		for _, item := range analysis.Anomalies {
+			anomaliesStr += fmt.Sprintf("• %s\n", item)
+		}
+	}
+
+	wastefulStr := "• _Tidak terdeteksi pemborosan_\n"
+	if len(analysis.WastefulSpending) > 0 {
+		wastefulStr = ""
+		for _, item := range analysis.WastefulSpending {
+			wastefulStr += fmt.Sprintf("• %s\n", item)
+		}
+	}
+
+	trendsStr := "• _Belum ada data tren_\n"
+	if len(analysis.Trends) > 0 {
+		trendsStr = ""
+		for _, item := range analysis.Trends {
+			trendsStr += fmt.Sprintf("• %s\n", item)
+		}
+	}
+
+	recsStr := ""
+	for _, item := range analysis.SavingRecommendations {
+		recsStr += fmt.Sprintf("• %s\n", item)
+	}
+	if recsStr == "" {
+		recsStr = "• _Tetap catat keuangan rutin untuk tips lainnya_\n"
 	}
 
 	formattedResponse := fmt.Sprintf(
-		"🤖 *Hasil Analisis Keuangan & Tips Keuangan AI*\n\n"+
+		"🤖 *Hasil Analisis Keuangan AI* 📊\n\n"+
+			"🏆 *Skor Keuangan*: `%d/100`\n\n"+
 			"*Ringkasan Keuangan Lu*:\n%s\n\n"+
-			"💡 *Observasi Penting & Tips Hemat Buat Lu*:\n%s",
+			"📅 *Hari Pengeluaran Tertinggi*:\n• %s\n\n"+
+			"🚨 *Deteksi Anomali Belanja*:\n%s\n"+
+			"💸 *Bocor Alus (Pemborosan)*:\n%s\n"+
+			"📈 *Tren Pengeluaran Kategori*:\n%s\n"+
+			"💡 *Saran Penghematan & Tips*:\n%s",
+		analysis.FinancialScore,
 		analysis.Summary,
-		insightsStr,
+		analysis.HighestSpendingDay,
+		anomaliesStr,
+		wastefulStr,
+		trendsStr,
+		recsStr,
 	)
 
 	return formattedResponse, nil

@@ -32,8 +32,14 @@ type AIAnalyzeRequest struct {
 }
 
 type AIAnalyzeResponse struct {
-	Summary  string   `json:"summary"`
-	Insights []string `json:"insights"`
+	Summary               string   `json:"summary"`
+	Insights              []string `json:"insights"`
+	Anomalies             []string `json:"anomalies"`
+	WastefulSpending      []string `json:"wasteful_spending"`
+	HighestSpendingDay    string   `json:"highest_spending_day"`
+	Trends                []string `json:"trends"`
+	SavingRecommendations []string `json:"saving_recommendations"`
+	FinancialScore        int      `json:"financial_score"`
 }
 
 type AIClient interface {
