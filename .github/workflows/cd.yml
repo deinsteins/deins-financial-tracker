@@ -18,25 +18,44 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
+            # Check if directory exists and is a git repository
+            if [ ! -d "/home/ubuntu/finance-bot/.git" ]; then
+              echo "Directory /home/ubuntu/finance-bot does not exist or is not a git repo. Creating and cloning..."
+              mkdir -p /home/ubuntu
+              if ! git clone https://github.com/deinsteins/deins-financial-tracker.git /home/ubuntu/finance-bot; then
+                echo "ERROR: Failed to clone repository. Please check permissions."
+                exit 1
+              fi
+              PREV_COMMIT=""
+            else
+              cd /home/ubuntu/finance-bot
+              PREV_COMMIT=$(git rev-parse HEAD)
+            fi
+            
             cd /home/ubuntu/finance-bot
+            echo "Previous running commit is: $PREV_COMMIT"
             
-            # Save current commit hash for rollback
-            PREV_COMMIT=$(git rev-parse HEAD)
-            echo "Current running commit is $PREV_COMMIT"
-            
-            # Pull latest changes
-            echo "Pulling latest changes from master..."
-            if ! git pull origin master; then
-              echo "ERROR: git pull failed. No changes applied."
-              exit 1
+            # Pull latest changes (only if it wasn't a fresh clone)
+            if [ -n "$PREV_COMMIT" ]; then
+              echo "Pulling latest changes from master..."
+              if ! git pull origin master; then
+                echo "ERROR: git pull failed. No changes applied."
+                exit 1
+              fi
             fi
             
             # Attempt to build and run updated services
             echo "Building and starting production containers..."
             if ! docker compose -f docker-compose.prod.yml up -d --build --remove-orphans; then
-              echo "ERROR: Docker build/up failed! Rolling back to commit $PREV_COMMIT..."
-              git checkout -f $PREV_COMMIT
-              docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
+              echo "ERROR: Docker build/up failed!"
+              if [ -n "$PREV_COMMIT" ]; then
+                echo "Rolling back to commit $PREV_COMMIT..."
+                git checkout -f $PREV_COMMIT
+                docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
+              else
+                echo "Fresh deployment failed. Cleaning up..."
+                docker compose -f docker-compose.prod.yml down -v
+              fi
               exit 1
             fi
             
@@ -58,9 +77,15 @@ jobs:
             
             # If any container is unhealthy, roll back
             if [ $FAILED_HEALTH -ne 0 ]; then
-              echo "ERROR: One or more services failed health checks! Rolling back to commit $PREV_COMMIT..."
-              git checkout -f $PREV_COMMIT
-              docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
+              echo "ERROR: One or more services failed health checks!"
+              if [ -n "$PREV_COMMIT" ]; then
+                echo "Rolling back to commit $PREV_COMMIT..."
+                git checkout -f $PREV_COMMIT
+                docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
+              else
+                echo "Fresh deployment unhealthy. Cleaning up..."
+                docker compose -f docker-compose.prod.yml down -v
+              fi
               docker image prune -f
               exit 1
             fi
