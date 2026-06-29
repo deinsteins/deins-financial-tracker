@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -63,6 +66,8 @@ func (h *BotHandler) handleCommand(msg *tgbotapi.Message) {
 			"/start - Mulai ulang bot & sapa gua\n"+
 			"/today - Cek pengeluaran lu hari ini\n"+
 			"/month - Cek rekap bulanan lu\n"+
+			"/budget set <kategori> <jumlah> - Set budget bulanan kategori tertentu\n"+
+			"/budget status - Cek status budget pengeluaran lu\n"+
 			"/analyze - Minta AI buatin analisis keuangan lu\n\n"+
 			"Atau langsung ketik aja transaksi lu, contoh: 'makan bakso 25rb'. Nanti gua catetin!", msg.From.FirstName)
 
@@ -77,6 +82,9 @@ func (h *BotHandler) handleCommand(msg *tgbotapi.Message) {
 		if err != nil {
 			replyText = "Waduh, gagal narik rekap bulanan lu. Coba lagi ntar ya bro!"
 		}
+
+	case "budget":
+		replyText = h.handleBudgetCommand(msg.From.ID, msg.CommandArguments())
 
 	case "analyze":
 		replyText, err = h.finance.GenerateAIAnalysis(msg.From.ID)
@@ -255,4 +263,92 @@ func formatIDRCurrency(amount int64) string {
 		n++
 	}
 	return "Rp " + string(res)
+}
+
+func parseAmount(s string) (int64, error) {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if s == "" {
+		return 0, fmt.Errorf("jumlah tidak boleh kosong")
+	}
+
+	// Remove Rp prefix, dots, commas
+	s = strings.TrimPrefix(s, "rp")
+	s = strings.TrimSpace(s)
+	s = strings.ReplaceAll(s, ".", "")
+	s = strings.ReplaceAll(s, ",", "")
+
+	// Regex for units
+	re := regexp.MustCompile(`^([\d.]+)\s*(rb|ribu|jt|juta|k|m)?$`)
+	matches := re.FindStringSubmatch(s)
+	if len(matches) == 0 {
+		// Try parsing direct float
+		val, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return 0, fmt.Errorf("format jumlah '%s' tidak valid", s)
+		}
+		return int64(val), nil
+	}
+
+	numStr := matches[1]
+	unit := matches[2]
+
+	val, err := strconv.ParseFloat(numStr, 64)
+	if err != nil {
+		return 0, fmt.Errorf("format angka '%s' tidak valid", numStr)
+	}
+
+	var multiplier float64 = 1
+	switch unit {
+	case "k", "rb", "ribu":
+		multiplier = 1000
+	case "jt", "juta":
+		multiplier = 1000000
+	case "m":
+		multiplier = 1000000000
+	}
+
+	return int64(val * multiplier), nil
+}
+
+func (h *BotHandler) handleBudgetCommand(telegramID int64, args string) string {
+	args = strings.TrimSpace(args)
+	if args == "" {
+		return "📋 *Panduan Perintah /budget*:\n\n" +
+			"• `/budget set <kategori> <jumlah>` - Set budget untuk kategori tertentu\n" +
+			"  _Contoh: `/budget set food 500rb`_\n" +
+			"  _Contoh: `/budget set transport 200k`_\n\n" +
+			"• `/budget status` - Cek status budget & pengeluaran lu saat ini"
+	}
+
+	parts := strings.Fields(args)
+	subcmd := strings.ToLower(parts[0])
+
+	switch subcmd {
+	case "set":
+		if len(parts) < 3 {
+			return "⚠️ Format salah. Gunakan: `/budget set <kategori> <jumlah>`\n_Contoh: `/budget set food 500rb`_"
+		}
+		category := strings.ToLower(parts[1])
+		amountStr := parts[2]
+		amount, err := parseAmount(amountStr)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Jumlah budget tidak valid: %v", err)
+		}
+
+		reply, err := h.finance.SetCategoryBudget(telegramID, category, amount)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Gagal menyetel budget: %v", err)
+		}
+		return reply
+
+	case "status":
+		reply, err := h.finance.GetBudgetStatus(telegramID)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Gagal memanggil status budget: %v", err)
+		}
+		return reply
+
+	default:
+		return "⚠️ Perintah tidak dikenal. Gunakan `/budget set` atau `/budget status`."
+	}
 }

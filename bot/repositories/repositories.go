@@ -22,7 +22,7 @@ type ReportRepository interface {
 	GetByUserID(userID string) ([]*models.Report, error)
 }
 
-type CategoryBudgetRepository interface {
+type BudgetRepository interface {
 	SetLimit(userID string, category string, amount int64) error
 	GetLimits(userID string) (map[string]int64, error)
 	GetLimit(userID string, category string) (int64, error)

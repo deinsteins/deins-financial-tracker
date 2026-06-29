@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"finance-bot/bot/models"
@@ -21,6 +22,7 @@ type FinanceService interface {
 	GetTransactions(telegramID int64, limit int, txType string) ([]*models.Transaction, error)
 	SetMonthlyBudget(telegramID int64, amount int64) (string, error)
 	SetCategoryBudget(telegramID int64, category string, amount int64) (string, error)
+	GetBudgetStatus(telegramID int64) (string, error)
 	CheckBudgetAlerts(telegramID int64, category string) (string, error)
 	GetChatHistory(telegramID int64) ([]llm.Message, error)
 	SaveChatHistory(telegramID int64, role, content string) error
@@ -31,7 +33,7 @@ type financeService struct {
 	userRepo      repositories.UserRepository
 	txRepo        repositories.TransactionRepository
 	repRepo       repositories.ReportRepository
-	catBudgetRepo repositories.CategoryBudgetRepository
+	budgetRepo    repositories.BudgetRepository
 	chatMemoryRepo repositories.ChatMemoryRepository
 	loc           *time.Location
 }
@@ -41,7 +43,7 @@ func NewFinanceService(
 	userRepo repositories.UserRepository,
 	txRepo repositories.TransactionRepository,
 	repRepo repositories.ReportRepository,
-	catBudgetRepo repositories.CategoryBudgetRepository,
+	budgetRepo repositories.BudgetRepository,
 	chatMemoryRepo repositories.ChatMemoryRepository,
 ) FinanceService {
 	tz := os.Getenv("TZ")
@@ -58,7 +60,7 @@ func NewFinanceService(
 		userRepo:      userRepo,
 		txRepo:        txRepo,
 		repRepo:       repRepo,
-		catBudgetRepo: catBudgetRepo,
+		budgetRepo:    budgetRepo,
 		chatMemoryRepo: chatMemoryRepo,
 		loc:           loc,
 	}
@@ -366,12 +368,90 @@ func (s *financeService) SetCategoryBudget(telegramID int64, category string, am
 		return "", err
 	}
 
-	err = s.catBudgetRepo.SetLimit(user.ID, category, amount)
+	err = s.budgetRepo.SetLimit(user.ID, category, amount)
 	if err != nil {
 		return "", fmt.Errorf("gagal update budget kategori: %w", err)
 	}
 
 	return fmt.Sprintf("✅ *Budget Kategori Berhasil Diupdate!* 💰\n\nLimit spending kategori *%s* lu sekarang set ke *%s*.", category, formatIDRCurrency(amount)), nil
+}
+
+func (s *financeService) GetBudgetStatus(telegramID int64) (string, error) {
+	user, err := s.getOrCreateUser(telegramID, "Telegram User")
+	if err != nil {
+		return "", err
+	}
+
+	// 1. Get all category budgets
+	limits, err := s.budgetRepo.GetLimits(user.ID)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch budgets: %w", err)
+	}
+
+	// 2. Fetch all transactions this month to calculate spending
+	txs, err := s.txRepo.GetMonth(user.ID, s.loc.String())
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch monthly transactions: %w", err)
+	}
+
+	var totalExpense int64
+	categoryExpenses := make(map[string]int64)
+	for _, tx := range txs {
+		if tx.Type == "expense" {
+			totalExpense += tx.Amount
+			categoryExpenses[tx.Category] += tx.Amount
+		}
+	}
+
+	// 3. Format budget list
+	var statusMsg strings.Builder
+	statusMsg.WriteString("📊 *Status Budget Bulan Ini*\n\n")
+
+	if len(limits) == 0 && user.MonthlyBudget == 0 {
+		statusMsg.WriteString("📂 *Belum ada budget yang disetel nih bro.*\nGunakan perintah `/budget set <kategori> <jumlah>` untuk menyetel budget.")
+		return statusMsg.String(), nil
+	}
+
+	// Category Budgets
+	if len(limits) > 0 {
+		statusMsg.WriteString("*Budget Kategori*:\n")
+		for cat, limit := range limits {
+			spent := categoryExpenses[cat]
+			pct := 0.0
+			if limit > 0 {
+				pct = (float64(spent) / float64(limit)) * 100
+			}
+
+			statusIndicator := "✅ *Aman*"
+			if pct > 100 {
+				statusIndicator = "🚨 *Over-budget!*"
+			} else if pct >= 80 {
+				statusIndicator = "⚠️ *Mendekati limit!*"
+			}
+
+			statusMsg.WriteString(fmt.Sprintf("• *%s*: %s / %s (%.1f%%) %s\n",
+				cat, formatIDRCurrency(spent), formatIDRCurrency(limit), pct, statusIndicator))
+		}
+		statusMsg.WriteString("\n")
+	}
+
+	// Overall Monthly Budget
+	if user.MonthlyBudget > 0 {
+		pct := 0.0
+		pct = (float64(totalExpense) / float64(user.MonthlyBudget)) * 100
+
+		statusIndicator := "✅ *Aman*"
+		if pct > 100 {
+			statusIndicator = "🚨 *Over-budget!*"
+		} else if pct >= 80 {
+			statusIndicator = "⚠️ *Mendekati limit!*"
+		}
+
+		statusMsg.WriteString(fmt.Sprintf("*Total Pengeluaran Bulanan*:\n• *Limit*: %s / %s (%.1f%%) %s\n",
+			formatIDRCurrency(totalExpense), formatIDRCurrency(user.MonthlyBudget), pct, statusIndicator))
+	}
+
+	return statusMsg.String(), nil
 }
 
 func (s *financeService) CheckBudgetAlerts(telegramID int64, category string) (string, error) {
@@ -399,19 +479,31 @@ func (s *financeService) CheckBudgetAlerts(telegramID int64, category string) (s
 
 	var alerts string
 
-	// 1. Check monthly budget alert
-	if user.MonthlyBudget > 0 && monthlyExpense > user.MonthlyBudget {
-		overage := monthlyExpense - user.MonthlyBudget
-		alerts += fmt.Sprintf("⚠️ *PERINGATAN BUDGET BULANAN!* 💸\nTotal pengeluaran bulan ini sudah mencapai *%s*, melebihi budget bulanan lu (*%s*) sebesar *%s*!\n\n",
-			formatIDRCurrency(monthlyExpense), formatIDRCurrency(user.MonthlyBudget), formatIDRCurrency(overage))
+	// 1. Check category budget alert
+	categoryLimit, err := s.budgetRepo.GetLimit(user.ID, category)
+	if err == nil && categoryLimit > 0 {
+		pct := (float64(categoryExpense) / float64(categoryLimit)) * 100
+		if pct > 100 {
+			overage := categoryExpense - categoryLimit
+			alerts += fmt.Sprintf("🚨 *OVER-BUDGET KATEGORI!* 💸\nPengeluaran kategori *%s* bulan ini sudah mencapai *%s* (%.1f%%), melebihi budget kategori lu (*%s*) sebesar *%s*!\n\n",
+				category, formatIDRCurrency(categoryExpense), pct, formatIDRCurrency(categoryLimit), formatIDRCurrency(overage))
+		} else if pct >= 80 {
+			alerts += fmt.Sprintf("⚠️ *PERINGATAN BUDGET KATEGORI!* 💸\nPengeluaran kategori *%s* bulan ini sudah mencapai *%s* (%.1f%%), mendekati limit budget kategori lu (*%s*)!\n\n",
+				category, formatIDRCurrency(categoryExpense), pct, formatIDRCurrency(categoryLimit))
+		}
 	}
 
-	// 2. Check category budget alert
-	categoryLimit, err := s.catBudgetRepo.GetLimit(user.ID, category)
-	if err == nil && categoryLimit > 0 && categoryExpense > categoryLimit {
-		overage := categoryExpense - categoryLimit
-		alerts += fmt.Sprintf("⚠️ *PERINGATAN BUDGET KATEGORI!* 💸\nPengeluaran kategori *%s* bulan ini sudah mencapai *%s*, melebihi budget kategori lu (*%s*) sebesar *%s*!\n\n",
-			category, formatIDRCurrency(categoryExpense), formatIDRCurrency(categoryLimit), formatIDRCurrency(overage))
+	// 2. Check monthly budget alert
+	if user.MonthlyBudget > 0 {
+		pct := (float64(monthlyExpense) / float64(user.MonthlyBudget)) * 100
+		if pct > 100 {
+			overage := monthlyExpense - user.MonthlyBudget
+			alerts += fmt.Sprintf("🚨 *OVER-BUDGET BULANAN!* 💸\nTotal pengeluaran bulan ini sudah mencapai *%s* (%.1f%%), melebihi budget bulanan lu (*%s*) sebesar *%s*!\n\n",
+				formatIDRCurrency(monthlyExpense), pct, formatIDRCurrency(user.MonthlyBudget), formatIDRCurrency(overage))
+		} else if pct >= 80 {
+			alerts += fmt.Sprintf("⚠️ *PERINGATAN BUDGET BULANAN!* 💸\nTotal pengeluaran bulan ini sudah mencapai *%s* (%.1f%%), mendekati limit budget bulanan lu (*%s*)!\n\n",
+				formatIDRCurrency(monthlyExpense), pct, formatIDRCurrency(user.MonthlyBudget))
+		}
 	}
 
 	return alerts, nil
