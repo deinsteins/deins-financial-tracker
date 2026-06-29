@@ -1,0 +1,71 @@
+name: Deploy
+
+on:
+  workflow_dispatch: # Allows manual deployment from Actions tab
+  push:
+    tags:
+      - 'v*'      # Triggers on version tags (e.g. v1.0, v2.1.3)
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: SSH Deploy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd /home/ubuntu/finance-bot
+            
+            # Save current commit hash for rollback
+            PREV_COMMIT=$(git rev-parse HEAD)
+            echo "Current running commit is $PREV_COMMIT"
+            
+            # Pull latest changes
+            echo "Pulling latest changes from master..."
+            if ! git pull origin master; then
+              echo "ERROR: git pull failed. No changes applied."
+              exit 1
+            fi
+            
+            # Attempt to build and run updated services
+            echo "Building and starting production containers..."
+            if ! docker compose -f docker-compose.prod.yml up -d --build --remove-orphans; then
+              echo "ERROR: Docker build/up failed! Rolling back to commit $PREV_COMMIT..."
+              git checkout -f $PREV_COMMIT
+              docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
+              exit 1
+            fi
+            
+            # Wait for healthchecks to run
+            echo "Waiting 15 seconds for containers to initialize..."
+            sleep 15
+            
+            # Validate health status of all containers
+            FAILED_HEALTH=0
+            for container in $(docker compose -f docker-compose.prod.yml ps -q); do
+              STATUS=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' $container)
+              if [ "$STATUS" != "healthy" ] && [ "$STATUS" != "running" ]; then
+                echo "ERROR: Container $container is in state '$STATUS' (unhealthy)!"
+                FAILED_HEALTH=1
+              else
+                echo "Container $container is healthy ($STATUS)."
+              fi
+            done
+            
+            # If any container is unhealthy, roll back
+            if [ $FAILED_HEALTH -ne 0 ]; then
+              echo "ERROR: One or more services failed health checks! Rolling back to commit $PREV_COMMIT..."
+              git checkout -f $PREV_COMMIT
+              docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
+              docker image prune -f
+              exit 1
+            fi
+            
+            # Success: clean up old images
+            echo "All services verified healthy! Pruning old images..."
+            docker image prune -f
+            echo "Deployment completed successfully!"
