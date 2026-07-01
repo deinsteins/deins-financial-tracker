@@ -150,6 +150,7 @@ func (h *BotHandler) handleCommand(msg *tgbotapi.Message) {
 			"/goal add <nama> <jumlah> <deadline> - Set target keuangan baru\n"+
 			"/goal status - Cek progress target keuangan lu\n"+
 			"/wallets - Cek saldo dompet (cash, bank, ewallet, etc.)\n"+
+			"/debt - Kelola hutang & piutang lu\n"+
 			"/subscriptions - Cek daftar pengeluaran rutin/langganan lu\n"+
 			"/analyze - Minta AI buatin analisis keuangan lu\n\n"+
 			"Atau langsung ketik aja transaksi lu, contoh: 'makan bakso 25rb'. Nanti gua catetin!", msg.From.FirstName)
@@ -190,11 +191,299 @@ func (h *BotHandler) handleCommand(msg *tgbotapi.Message) {
 			replyText = fmt.Sprintf("⚠️ *Error pas analisis keuangan lu nih:*\n%v", err)
 		}
 
+	case "debt":
+		replyText = h.handleDebtCommand(msg.From.ID, msg.CommandArguments())
+
 	default:
 		replyText = "Perintah apaan tuh? Coba cek /start aja biar jelas bro!"
 	}
 
 	h.sendReply(msg.Chat.ID, replyText, msg.MessageID)
+}
+
+func (h *BotHandler) handleDebtCommand(telegramID int64, args string) string {
+	args = strings.TrimSpace(args)
+	if args == "" {
+		return "📋 *Panduan Perintah /debt*:\n\n" +
+			"• `/debt add receivable <nama> <jumlah> <deskripsi>`\n  _Catat hutang orang ke lu (piutang)_\n  _Contoh: `/debt add receivable Andi 500rb makan bersama`_\n\n" +
+			"• `/debt add payable <nama> <jumlah> <deskripsi>`\n  _Catat hutang lu ke orang lain_\n  _Contoh: `/debt add payable Budi 200rb beli pulsa`_\n\n" +
+			"• `/debt list` — Lihat semua hutang & piutang aktif\n" +
+			"• `/debt summary` — Lihat ringkasan posisi keuangan hutang lu\n" +
+			"• `/debt pay <nama> <jumlah>` — Bayar sebagian hutang\n" +
+			"• `/debt paid <nama>` — Tandai hutang ke nama itu sudah lunas\n" +
+			"• `/debt cancel <nama>` — Batalkan hutang ke nama itu"
+	}
+
+	parts := strings.Fields(args)
+	subcmd := strings.ToLower(parts[0])
+
+	switch subcmd {
+	case "add":
+		return h.handleDebtAdd(telegramID, parts[1:])
+
+	case "list":
+		return h.handleDebtList(telegramID)
+
+	case "summary":
+		return h.handleDebtSummary(telegramID)
+
+	case "pay":
+		return h.handleDebtPay(telegramID, parts[1:])
+
+	case "paid":
+		return h.handleDebtPaid(telegramID, parts[1:])
+
+	case "cancel":
+		return h.handleDebtCancel(telegramID, parts[1:])
+
+	default:
+		return "⚠️ Sub-perintah tidak dikenal.\n\n" +
+			"Coba `/debt add receivable Andi 500rb makan`, `/debt list`, atau `/debt summary` ya bro!"
+	}
+}
+
+func (h *BotHandler) handleDebtAdd(telegramID int64, parts []string) string {
+	if len(parts) < 4 {
+		return "⚠️ Format salah.\n\n" +
+			"Gunakan: `/debt add <tipe> <nama> <jumlah> <deskripsi>`\n\n" +
+			"*Contoh:*\n" +
+			"• `/debt add receivable Andi 500rb makan bersama`\n" +
+			"• `/debt add payable Budi 200rb beli pulsa`"
+	}
+
+	direction := strings.ToLower(parts[0])
+	if direction != "payable" && direction != "receivable" {
+		return "⚠️ Tipe harus `receivable` (orang ke lu) atau `payable` (lu ke orang).\n\n" +
+			"_Contoh: `/debt add receivable Andi 100rb kopi`_"
+	}
+
+	personName := parts[1]
+	amount, err := parseAmount(parts[2])
+	if err != nil {
+		return fmt.Sprintf("⚠️ Jumlah tidak valid: %v\n_Coba: 25rb, 200k, 1.5jt, atau 50000_", err)
+	}
+
+	description := strings.Join(parts[3:], " ")
+
+	debt, err := h.finance.AddDebt(telegramID, personName, direction, amount, description, nil)
+	if err != nil {
+		return fmt.Sprintf("⚠️ *Gagal menyimpan hutang:*\n%v", err)
+	}
+
+	dirLabel := "Hutang ke *%s*"
+	if direction == "receivable" {
+		dirLabel = "*%s* hutang ke lu"
+	}
+
+	return fmt.Sprintf("✅ *Hutang Berhasil Dicatat!* 🎉\n\n"+
+		"• *Tipe*: %s\n"+
+		"• %s\n"+
+		"• *Jumlah*: %s\n"+
+		"• *Deskripsi*: %s\n"+
+		"• *Status*: %s",
+		func() string {
+			if direction == "receivable" {
+				return "💰 Piutang"
+			}
+			return "💸 Hutang"
+		}(),
+		fmt.Sprintf(dirLabel, debt.PersonName),
+		formatIDRCurrency(debt.Amount),
+		debt.Description,
+		"aktif",
+	)
+}
+
+func (h *BotHandler) handleDebtList(telegramID int64) string {
+	debts, err := h.finance.GetDebts(telegramID, true)
+	if err != nil {
+		return fmt.Sprintf("⚠️ *Gagal mengambil data hutang:*\n%v", err)
+	}
+
+	if len(debts) == 0 {
+		return "📒 *Daftar Hutang & Piutang*\n\nBelum ada hutang atau piutang aktif nih bro! 🎉"
+	}
+
+	var payables, receivables string
+	pCount, rCount := 0, 0
+
+	for _, d := range debts {
+		remaining := d.Amount - d.PaidAmount
+		line := fmt.Sprintf("• *%s*: %s", d.PersonName, formatIDRCurrency(remaining))
+		if d.PaidAmount > 0 {
+			line += fmt.Sprintf(" _(sudah bayar %s dari %s)_", formatIDRCurrency(d.PaidAmount), formatIDRCurrency(d.Amount))
+		}
+		if d.DueDate != nil {
+			line += fmt.Sprintf("\n  📅 Jatuh tempo: %s", d.DueDate.Format("02 Jan 2006"))
+		}
+		if d.Description != "" {
+			line += fmt.Sprintf("\n  📝 %s", d.Description)
+		}
+		line += "\n\n"
+
+		if d.Direction == "payable" {
+			payables += line
+			pCount++
+		} else {
+			receivables += line
+			rCount++
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString("📒 *Daftar Hutang & Piutang*\n\n")
+
+	if rCount > 0 {
+		sb.WriteString(fmt.Sprintf("💰 *Piutang (%d):*\n%s", rCount, receivables))
+	}
+	if pCount > 0 {
+		sb.WriteString(fmt.Sprintf("💸 *Hutang (%d):*\n%s", pCount, payables))
+	}
+
+	sb.WriteString("_Gunakan `/debt pay` atau `/debt paid` untuk membayar._")
+
+	return sb.String()
+}
+
+func (h *BotHandler) handleDebtSummary(telegramID int64) string {
+	summary, err := h.finance.GetDebtSummary(telegramID)
+	if err != nil {
+		return fmt.Sprintf("⚠️ *Gagal mengambil ringkasan hutang:*\n%v", err)
+	}
+	return summary
+}
+
+func (h *BotHandler) handleDebtPay(telegramID int64, parts []string) string {
+	if len(parts) < 2 {
+		return "⚠️ Format salah.\n\n" +
+			"Gunakan: `/debt pay <nama> <jumlah>`\n\n" +
+			"_Contoh: `/debt pay Andi 100rb`_"
+	}
+
+	personName := parts[0]
+	amount, err := parseAmount(parts[1])
+	if err != nil {
+		return fmt.Sprintf("⚠️ Jumlah tidak valid: %v\n_Coba: 25rb, 200k, 1.5jt, atau 50000_", err)
+	}
+
+	debts, err := h.finance.GetDebtsByPersonName(telegramID, personName)
+	if err != nil {
+		return fmt.Sprintf("⚠️ *Gagal mencari hutang:*\n%v", err)
+	}
+	if len(debts) == 0 {
+		return fmt.Sprintf("⚠️ Tidak ditemukan hutang aktif atas nama *%s*.", personName)
+	}
+	if len(debts) > 1 {
+		return fmt.Sprintf("⚠️ Ada %d hutang aktif atas nama *%s*.\nSaat ini gua baru bisa bayar yang paling baru dibuat dulu ya bro!", len(debts), personName)
+	}
+
+	debt := debts[0]
+	note := fmt.Sprintf("Bayar %s", formatIDRCurrency(amount))
+
+	payment, updatedDebt, err := h.finance.PayDebt(telegramID, debt.ID, amount, note)
+	if err != nil {
+		return fmt.Sprintf("⚠️ *Gagal memproses pembayaran:*\n%v", err)
+	}
+
+	remaining := updatedDebt.Amount - updatedDebt.PaidAmount
+
+	replyText := fmt.Sprintf("✅ *Pembayaran Berhasil!* 🎉\n\n"+
+		"• *Ke:* %s\n"+
+		"• *Dibayar:* %s\n"+
+		"• *Sisa:* %s\n"+
+		"• *Status:* %s",
+		debt.PersonName,
+		formatIDRCurrency(payment.Amount),
+		formatIDRCurrency(remaining),
+		func() string {
+			if updatedDebt.Status == "paid" {
+				return "🟢 Lunas!"
+			}
+			return "🟡 Belum lunas"
+		}(),
+	)
+
+	if updatedDebt.Status == "paid" {
+		replyText += "\n\n🎉 *Hutang ini sudah lunas!*"
+	}
+
+	return replyText
+}
+
+func (h *BotHandler) handleDebtPaid(telegramID int64, parts []string) string {
+	if len(parts) < 1 {
+		return "⚠️ Format salah.\n\n" +
+			"Gunakan: `/debt paid <nama>`\n\n" +
+			"_Contoh: `/debt paid Andi`_"
+	}
+
+	personName := parts[0]
+
+	debts, err := h.finance.GetDebtsByPersonName(telegramID, personName)
+	if err != nil {
+		return fmt.Sprintf("⚠️ *Gagal mencari hutang:*\n%v", err)
+	}
+	if len(debts) == 0 {
+		return fmt.Sprintf("⚠️ Tidak ditemukan hutang aktif atas nama *%s*.", personName)
+	}
+	if len(debts) > 1 {
+		return fmt.Sprintf("⚠️ Ada %d hutang aktif atas nama *%s*.\nSaat ini gua baru bisa lunasi yang paling baru dibuat dulu ya bro!", len(debts), personName)
+	}
+
+	debt := debts[0]
+
+	err = h.finance.SettleDebt(telegramID, debt.ID)
+	if err != nil {
+		return fmt.Sprintf("⚠️ *Gagal menandai lunas:*\n%v", err)
+	}
+
+	return fmt.Sprintf("✅ *Hutang Lunas!* 🎉\n\n"+
+		"• *Nama:* %s\n"+
+		"• *Jumlah:* %s\n"+
+		"• *Deskripsi:* %s\n\n"+
+		"Hutang ini sudah ditandai sebagai *lunas* ya bro! 👍",
+		debt.PersonName,
+		formatIDRCurrency(debt.Amount),
+		debt.Description,
+	)
+}
+
+func (h *BotHandler) handleDebtCancel(telegramID int64, parts []string) string {
+	if len(parts) < 1 {
+		return "⚠️ Format salah.\n\n" +
+			"Gunakan: `/debt cancel <nama>`\n\n" +
+			"_Contoh: `/debt cancel Andi`_"
+	}
+
+	personName := parts[0]
+
+	debts, err := h.finance.GetDebtsByPersonName(telegramID, personName)
+	if err != nil {
+		return fmt.Sprintf("⚠️ *Gagal mencari hutang:*\n%v", err)
+	}
+	if len(debts) == 0 {
+		return fmt.Sprintf("⚠️ Tidak ditemukan hutang aktif atas nama *%s*.", personName)
+	}
+	if len(debts) > 1 {
+		return fmt.Sprintf("⚠️ Ada %d hutang aktif atas nama *%s*.\nSaat ini gua baru bisa batalkan yang paling baru dibuat dulu ya bro!", len(debts), personName)
+	}
+
+	debt := debts[0]
+
+	err = h.finance.CancelDebt(telegramID, debt.ID)
+	if err != nil {
+		return fmt.Sprintf("⚠️ *Gagal membatalkan hutang:*\n%v", err)
+	}
+
+	return fmt.Sprintf("❌ *Hutang Dibatalkan*\n\n"+
+		"• *Nama:* %s\n"+
+		"• *Jumlah:* %s\n"+
+		"• *Deskripsi:* %s\n\n"+
+		"Hutang ini sudah dibatalkan ya bro!",
+		debt.PersonName,
+		formatIDRCurrency(debt.Amount),
+		debt.Description,
+	)
 }
 
 func (h *BotHandler) handleTextMessage(msg *tgbotapi.Message) {

@@ -57,3 +57,25 @@ type Wallet struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type Debt struct {
+	ID         string     `json:"id"`
+	UserID     string     `json:"user_id"`
+	PersonName string     `json:"person_name"`
+	Direction  string     `json:"direction"` // "payable" or "receivable"
+	Amount     int64      `json:"amount"`
+	PaidAmount int64      `json:"paid_amount"`
+	Description string    `json:"description"`
+	Status     string     `json:"status"` // "active", "partial", "paid", "cancelled"
+	DueDate    *time.Time `json:"due_date,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
+}
+
+type DebtPayment struct {
+	ID     string    `json:"id"`
+	DebtID string    `json:"debt_id"`
+	Amount int64     `json:"amount"`
+	Note   string    `json:"note"`
+	PaidAt time.Time `json:"paid_at"`
+}
+

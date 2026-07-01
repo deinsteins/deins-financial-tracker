@@ -33,6 +33,13 @@ type FinanceService interface {
 	GetChatHistory(telegramID int64) ([]llm.Message, error)
 	SaveChatHistory(telegramID int64, role, content string) error
 	OCRReceipt(fileData []byte, filename string) (*OCRReceiptResponse, error)
+	AddDebt(telegramID int64, personName, direction string, amount int64, description string, dueDate *time.Time) (*models.Debt, error)
+	GetDebts(telegramID int64, activeOnly bool) ([]*models.Debt, error)
+	GetDebtsByPersonName(telegramID int64, personName string) ([]*models.Debt, error)
+	PayDebt(telegramID int64, debtID string, amount int64, note string) (*models.DebtPayment, *models.Debt, error)
+	SettleDebt(telegramID int64, debtID string) error
+	CancelDebt(telegramID int64, debtID string) error
+	GetDebtSummary(telegramID int64) (string, error)
 }
 
 type financeService struct {
@@ -44,6 +51,7 @@ type financeService struct {
 	goalRepo       repositories.GoalRepository
 	walletRepo     repositories.WalletRepository
 	chatMemoryRepo repositories.ChatMemoryRepository
+	debtRepo       repositories.DebtRepository
 	loc            *time.Location
 }
 
@@ -56,6 +64,7 @@ func NewFinanceService(
 	goalRepo repositories.GoalRepository,
 	walletRepo repositories.WalletRepository,
 	chatMemoryRepo repositories.ChatMemoryRepository,
+	debtRepo repositories.DebtRepository,
 ) FinanceService {
 	tz := os.Getenv("TZ")
 	if tz == "" {
@@ -75,6 +84,7 @@ func NewFinanceService(
 		goalRepo:       goalRepo,
 		walletRepo:     walletRepo,
 		chatMemoryRepo: chatMemoryRepo,
+		debtRepo:       debtRepo,
 		loc:            loc,
 	}
 }

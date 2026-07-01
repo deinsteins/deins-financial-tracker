@@ -46,3 +46,14 @@ type ChatMemoryRepository interface {
 	GetLastN(userID string, n int) ([]*models.ChatMessage, error)
 }
 
+type DebtRepository interface {
+	CreateDebt(debt *models.Debt) error
+	GetDebtsByUser(userID string) ([]*models.Debt, error)
+	GetActiveDebtsByUser(userID string) ([]*models.Debt, error)
+	GetDebtByPersonName(userID string, personName string) ([]*models.Debt, error)
+	AddDebtPayment(payment *models.DebtPayment, newPaidAmount int64, newStatus string) error
+	MarkDebtAsPaid(debtID string) error
+	CancelDebt(debtID string) error
+	GetDebtSummary(userID string) (totalPayable int64, totalReceivable int64, err error)
+}
+
