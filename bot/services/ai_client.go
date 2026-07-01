@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"time"
 
@@ -42,9 +43,25 @@ type AIAnalyzeResponse struct {
 	FinancialScore        int      `json:"financial_score"`
 }
 
+type OCRReceiptItem struct {
+	Name  string `json:"name"`
+	Qty   int    `json:"qty"`
+	Price int64  `json:"price"`
+}
+
+type OCRReceiptResponse struct {
+	Filename string           `json:"filename"`
+	RawText  string           `json:"raw_text"`
+	Merchant string           `json:"merchant"`
+	Items    []OCRReceiptItem `json:"items"`
+	Total    int64            `json:"total"`
+	Date     *string          `json:"date"`
+}
+
 type AIClient interface {
 	ParseTransaction(text string) (*AIParseResponse, error)
 	AnalyzeTransactions(txs []*models.Transaction) (*AIAnalyzeResponse, error)
+	OCRReceipt(fileData []byte, filename string) (*OCRReceiptResponse, error)
 }
 
 type aiClient struct {
@@ -166,4 +183,58 @@ func (c *aiClient) AnalyzeTransactions(txs []*models.Transaction) (*AIAnalyzeRes
 	}
 
 	return &analyzeResp, nil
+}
+
+func (c *aiClient) OCRReceipt(fileData []byte, filename string) (*OCRReceiptResponse, error) {
+	apiURL := fmt.Sprintf("%s/ocr", c.serviceURL)
+
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create form file: %w", err)
+	}
+	if _, err := part.Write(fileData); err != nil {
+		return nil, fmt.Errorf("failed to write file data: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return nil, fmt.Errorf("failed to close multipart writer: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, &buf)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("AI Service connection error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		var errData map[string]interface{}
+		_ = json.Unmarshal(body, &errData)
+		if detail, ok := errData["detail"]; ok {
+			return nil, fmt.Errorf("AI Service returned error: %v", detail)
+		}
+		return nil, fmt.Errorf("AI Service OCR failed with status %d", resp.StatusCode)
+	}
+
+	var ocrResp OCRReceiptResponse
+	if err := json.Unmarshal(body, &ocrResp); err != nil {
+		return nil, fmt.Errorf("received malformed OCR response from AI Service: %w", err)
+	}
+
+	return &ocrResp, nil
 }

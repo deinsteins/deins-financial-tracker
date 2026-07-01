@@ -32,6 +32,7 @@ type FinanceService interface {
 	GetSubscriptions(telegramID int64) (string, error)
 	GetChatHistory(telegramID int64) ([]llm.Message, error)
 	SaveChatHistory(telegramID int64, role, content string) error
+	OCRReceipt(fileData []byte, filename string) (*OCRReceiptResponse, error)
 }
 
 type financeService struct {
@@ -927,4 +928,8 @@ func (s *financeService) GetSubscriptions(telegramID int64) (string, error) {
 	}
 
 	return responseMsg.String(), nil
+}
+
+func (s *financeService) OCRReceipt(fileData []byte, filename string) (*OCRReceiptResponse, error) {
+	return s.ai.OCRReceipt(fileData, filename)
 }

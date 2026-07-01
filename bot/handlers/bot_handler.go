@@ -3,7 +3,9 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
@@ -42,9 +44,11 @@ func (h *BotHandler) HandleUpdates(updates tgbotapi.UpdatesChannel) {
 		// Log incoming message
 		log.Printf("[%s] %s (ChatID: %d)", update.Message.From.UserName, update.Message.Text, update.Message.Chat.ID)
 
-		// Handle command or message
+		// Handle command, photo, or text message
 		if update.Message.IsCommand() {
 			h.handleCommand(update.Message)
+		} else if update.Message.Photo != nil && len(update.Message.Photo) > 0 {
+			h.handlePhotoMessage(update.Message)
 		} else {
 			h.handleTextMessage(update.Message)
 		}
@@ -282,6 +286,98 @@ func (h *BotHandler) handleTextMessage(msg *tgbotapi.Message) {
 	// 3. Save memory context (only for successful turns)
 	_ = h.finance.SaveChatHistory(msg.From.ID, "user", msg.Text)
 	_ = h.finance.SaveChatHistory(msg.From.ID, "assistant", intent.Response)
+}
+
+func (h *BotHandler) handlePhotoMessage(msg *tgbotapi.Message) {
+	log.Printf("Received photo from user %s (ChatID: %d)", msg.From.UserName, msg.Chat.ID)
+
+	h.sendReply(msg.Chat.ID, "🔍 _Lagi gua scan struk lu, tunggu bentar ya..._", msg.MessageID)
+
+	// Pick the highest-resolution photo (last element in the Photo slice)
+	photos := msg.Photo
+	bestPhoto := photos[len(photos)-1]
+
+	// Get the file download URL from Telegram
+	fileConfig := tgbotapi.FileConfig{FileID: bestPhoto.FileID}
+	tgFile, err := h.bot.GetFile(fileConfig)
+	if err != nil {
+		log.Printf("Failed to get file info from Telegram: %v", err)
+		h.sendReply(msg.Chat.ID, "⚠️ *Gagal mengambil file foto dari Telegram.*\nCoba kirim ulang ya bro!", msg.MessageID)
+		return
+	}
+
+	fileURL := tgFile.Link(h.bot.Token)
+
+	// Download the image bytes
+	resp, err := http.Get(fileURL)
+	if err != nil {
+		log.Printf("Failed to download photo from Telegram: %v", err)
+		h.sendReply(msg.Chat.ID, "⚠️ *Gagal download foto dari Telegram.*\nCoba kirim ulang ya bro!", msg.MessageID)
+		return
+	}
+	defer resp.Body.Close()
+
+	fileData, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("Failed to read photo data: %v", err)
+		h.sendReply(msg.Chat.ID, "⚠️ *Gagal membaca data foto.*\nCoba kirim ulang ya bro!", msg.MessageID)
+		return
+	}
+
+	// Derive a filename from the Telegram file path
+	filename := tgFile.FilePath
+	if idx := strings.LastIndex(filename, "/"); idx >= 0 {
+		filename = filename[idx+1:]
+	}
+	if filename == "" {
+		filename = "photo.jpg"
+	}
+
+	// Send to FastAPI /ocr endpoint
+	ocrResult, err := h.finance.OCRReceipt(fileData, filename)
+	if err != nil {
+		log.Printf("OCR request failed: %v", err)
+		h.sendReply(msg.Chat.ID, fmt.Sprintf("⚠️ *Gagal memproses struk:*\n%v", err), msg.MessageID)
+		return
+	}
+
+	replyText := formatReceiptSummary(ocrResult)
+	h.sendReply(msg.Chat.ID, replyText, msg.MessageID)
+
+	_ = h.finance.SaveChatHistory(msg.From.ID, "user", "[Sent a receipt photo]")
+	_ = h.finance.SaveChatHistory(msg.From.ID, "assistant", replyText)
+}
+
+func formatReceiptSummary(r *services.OCRReceiptResponse) string {
+	var sb strings.Builder
+
+	sb.WriteString("🧾 *Hasil Scan Struk*\n\n")
+
+	if r.Merchant != "" {
+		sb.WriteString(fmt.Sprintf("🏪 *Toko:* %s\n", r.Merchant))
+	}
+
+	if r.Date != nil && *r.Date != "" {
+		sb.WriteString(fmt.Sprintf("📅 *Tanggal:* %s\n", *r.Date))
+	}
+
+	sb.WriteString("\n")
+
+	if len(r.Items) > 0 {
+		sb.WriteString("📋 *Item:*\n")
+		for _, item := range r.Items {
+			if item.Qty > 1 {
+				sb.WriteString(fmt.Sprintf("  • %s ×%d — %s\n", item.Name, item.Qty, formatIDRCurrency(item.Price*int64(item.Qty))))
+			} else {
+				sb.WriteString(fmt.Sprintf("  • %s — %s\n", item.Name, formatIDRCurrency(item.Price)))
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString(fmt.Sprintf("💰 *Total:* %s\n", formatIDRCurrency(r.Total)))
+
+	return sb.String()
 }
 
 func (h *BotHandler) sendReply(chatID int64, text string, replyToMessageID int) {
