@@ -15,6 +15,17 @@ class ParsedTransaction(BaseModel):
     amount: int = Field(..., description="Transaction amount as an integer")
     description: str = Field(..., description="Sanitized description of the transaction")
 
+class ReceiptItem(BaseModel):
+    name: str = Field(..., description="Item name as printed on the receipt")
+    qty: int = Field(default=1, description="Quantity purchased, defaults to 1")
+    price: int = Field(..., description="Unit price in IDR as an integer")
+
+class ParsedReceipt(BaseModel):
+    merchant: str = Field(default="", description="Store or restaurant name")
+    items: list[ReceiptItem] = Field(default=[], description="List of purchased items")
+    total: int = Field(default=0, description="Total amount in IDR as an integer")
+    date: str | None = Field(default=None, description="ISO 8601 date string or null if not found")
+
 # Pydantic schema for analysis validation
 class AnalyzeResponse(BaseModel):
     summary: str = Field(..., description="Concise paragraph summary of the user financial health and spending patterns in casual Indonesian")
@@ -369,6 +380,66 @@ Return ONLY a JSON object. Do not wrap in markdown tags like ```json.
             logger.error(f"Gemini API parse failed: {e}. Falling back to rule-based parser.")
             parsed_data = fallback_parse(text)
             return ParsedTransaction(**parsed_data)
+
+    def parse_receipt(self, text: str) -> ParsedReceipt:
+        logger.info(f"Parsing receipt text ({len(text)} chars)")
+
+        if not self.is_configured:
+            raise ValueError(
+                "Receipt extraction requires a configured LLM but none is available."
+            )
+
+        receipt_prompt = f"""
+You are a receipt parser. Extract structured data from the following OCR text of a receipt.
+
+OCR Text:
+\"\"\"{text}\"\"\"
+
+Return a JSON object with:
+1. "merchant": the store/restaurant name (string, empty if not found).
+2. "items": a list of objects, each with "name" (string), "qty" (integer, default 1), "price" (integer, unit price in IDR, no "Rp" or dots).
+3. "total": the total amount as an integer in IDR (no "Rp", no dots, no commas).
+4. "date": the date on the receipt in ISO 8601 format (e.g. "2026-07-01"), or null if not found.
+
+Rules:
+- All monetary values MUST be plain integers in IDR (e.g. 25000, not "Rp 25.000" or "25.000").
+- If a quantity is not explicitly printed, default "qty" to 1.
+- If you cannot determine a field, use its default (empty string for merchant, empty list for items, 0 for total, null for date).
+- Do NOT hallucinate data that is not present in the OCR text.
+- Return ONLY the raw JSON object. Do not wrap in markdown tags like ```json.
+"""
+        system_prompt = "You are a receipt data extraction assistant."
+
+        try:
+            if self.is_custom_llm_configured:
+                raw_json = self._call_custom_llm(receipt_prompt, system_prompt).strip()
+                if raw_json.startswith("```"):
+                    lines = raw_json.split("\n")
+                    if lines[0].startswith("```"):
+                        lines = lines[1:]
+                    if lines[-1].startswith("```"):
+                        lines = lines[:-1]
+                    raw_json = "\n".join(lines).strip()
+            else:
+                model = genai.GenerativeModel(self.model_name)
+                response = model.generate_content(
+                    receipt_prompt,
+                    generation_config=genai.types.GenerationConfig(
+                        response_mime_type="application/json",
+                        response_schema=ParsedReceipt,
+                    )
+                )
+                raw_json = response.text.strip()
+
+            logger.info(f"Receipt LLM raw response: {raw_json}")
+            receipt_data = json.loads(raw_json)
+            return ParsedReceipt(**receipt_data)
+
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.error(f"Receipt LLM parse failed: {e}")
+            raise ValueError(f"Failed to extract receipt data: {e}") from e
 
     def analyze_transactions(self, transactions: list) -> AnalyzeResponse:
         logger.info(f"Analyzing {len(transactions)} transactions")

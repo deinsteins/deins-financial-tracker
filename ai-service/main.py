@@ -7,7 +7,14 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
-from parser_service import ParserService, ParsedTransaction, AnalyzeResponse
+from parser_service import (
+    ParserService,
+    ParsedTransaction,
+    AnalyzeResponse,
+    ParsedReceipt,
+    ReceiptItem,
+    normalize_indonesian_currency,
+)
 
 # Allowed image upload types for the OCR endpoint
 ALLOWED_OCR_EXTENSIONS = {".jpg", ".jpeg", ".png"}
@@ -37,9 +44,13 @@ class TransactionItem(BaseModel):
 class AnalyzeRequest(BaseModel):
     transactions: list[TransactionItem]
 
-class OCRResponse(BaseModel):
+class OCRReceiptResponse(BaseModel):
     filename: str = Field(..., example="receipt.jpg")
-    text: str = Field(..., example="Bakso Pak Kumis\nTotal: 25.000")
+    raw_text: str = Field(..., example="Bakso Pak Kumis\nTotal: 25.000")
+    merchant: str = Field(default="", example="Bakso Pak Kumis")
+    items: list[ReceiptItem] = Field(default=[])
+    total: int = Field(default=0, example=25000)
+    date: str | None = Field(default=None, example="2026-07-01")
 
 @app.get("/")
 def read_root():
@@ -85,7 +96,7 @@ def analyze_transactions(request: AnalyzeRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to analyze transactions: {str(e)}")
 
-@app.post("/ocr", response_model=OCRResponse)
+@app.post("/ocr", response_model=OCRReceiptResponse)
 async def extract_text_from_image(file: UploadFile = File(...)):
     # Validate that a filename was provided
     if not file.filename:
@@ -157,4 +168,23 @@ async def extract_text_from_image(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to extract text from image: {str(e)}")
 
-    return OCRResponse(filename=file.filename, text=extracted_text)
+    normalized_text = normalize_indonesian_currency(extracted_text)
+
+    try:
+        receipt = parser_service.parse_receipt(normalized_text)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": str(e), "raw_text": extracted_text},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to extract receipt data: {str(e)}")
+
+    return OCRReceiptResponse(
+        filename=file.filename,
+        raw_text=extracted_text,
+        merchant=receipt.merchant,
+        items=receipt.items,
+        total=receipt.total,
+        date=receipt.date,
+    )
