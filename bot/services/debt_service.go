@@ -8,6 +8,10 @@ import (
 	"finance-bot/bot/models"
 )
 
+func (s *financeService) ParseDebtText(text string) (*DebtParseResponse, error) {
+	return s.debtAI.ParseDebt(text)
+}
+
 func (s *financeService) AddDebt(telegramID int64, personName, direction string, amount int64, description string, dueDate *time.Time) (*models.Debt, error) {
 	user, err := s.getOrCreateUser(telegramID, "Telegram User")
 	if err != nil {

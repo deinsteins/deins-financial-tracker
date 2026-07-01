@@ -520,6 +520,13 @@ func (h *BotHandler) handleTextMessage(msg *tgbotapi.Message) {
 		}
 	}
 
+	// Prioritize debt/receivable parsing when the message contains a debt-related
+	// keyword. Falls back to normal orchestration below if the AI service call
+	// fails or the parsed intent is "unknown" with no identifiable person.
+	if h.tryHandleDebtIntent(msg, textToParse) {
+		return
+	}
+
 	// 1. Fetch conversational history memory context
 	history, err := h.finance.GetChatHistory(msg.From.ID)
 	if err != nil {

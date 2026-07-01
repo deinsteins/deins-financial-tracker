@@ -40,10 +40,12 @@ type FinanceService interface {
 	SettleDebt(telegramID int64, debtID string) error
 	CancelDebt(telegramID int64, debtID string) error
 	GetDebtSummary(telegramID int64) (string, error)
+	ParseDebtText(text string) (*DebtParseResponse, error)
 }
 
 type financeService struct {
 	ai             AIClient
+	debtAI         DebtAIClient
 	userRepo       repositories.UserRepository
 	txRepo         repositories.TransactionRepository
 	repRepo        repositories.ReportRepository
@@ -57,6 +59,7 @@ type financeService struct {
 
 func NewFinanceService(
 	ai AIClient,
+	debtAI DebtAIClient,
 	userRepo repositories.UserRepository,
 	txRepo repositories.TransactionRepository,
 	repRepo repositories.ReportRepository,
@@ -77,6 +80,7 @@ func NewFinanceService(
 
 	return &financeService{
 		ai:             ai,
+		debtAI:         debtAI,
 		userRepo:       userRepo,
 		txRepo:         txRepo,
 		repRepo:        repRepo,
