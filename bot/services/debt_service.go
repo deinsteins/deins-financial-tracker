@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -199,75 +200,117 @@ func (s *financeService) GetDebtSummary(telegramID int64) (string, error) {
 		return "", fmt.Errorf("failed to fetch debts: %w", err)
 	}
 
+	if len(debts) == 0 {
+		return "📊 *Ringkasan Hutang & Piutang*\n\nBelum ada hutang atau piutang aktif nih bro! 🎉", nil
+	}
+
 	totalPayable, totalReceivable, err := s.debtRepo.GetDebtSummary(user.ID)
 	if err != nil {
 		return "", fmt.Errorf("failed to get debt summary: %w", err)
 	}
 
-	if len(debts) == 0 {
-		return "📒 *Ringkasan Hutang/Piutang*\n\nBelum ada hutang atau piutang aktif nih bro! 🎉", nil
+	// Separate payable and receivable, and count how many are overdue
+	// (due_date strictly before today, in the app's configured timezone).
+	today := time.Now().In(s.loc)
+	today = time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, s.loc)
+
+	var payables, receivables []*models.Debt
+	var overduePayables, overdueReceivables int
+	for _, d := range debts {
+		isOverdue := false
+		if d.DueDate != nil {
+			y, m, day := d.DueDate.Date()
+			dueDateOnly := time.Date(y, m, day, 0, 0, 0, 0, s.loc)
+			isOverdue = dueDateOnly.Before(today)
+		}
+
+		if d.Direction == "payable" {
+			payables = append(payables, d)
+			if isOverdue {
+				overduePayables++
+			}
+		} else {
+			receivables = append(receivables, d)
+			if isOverdue {
+				overdueReceivables++
+			}
+		}
 	}
 
 	var sb strings.Builder
-	sb.WriteString("📒 *Ringkasan Hutang/Piutang*\n\n")
+	sb.WriteString("📊 *Ringkasan Hutang & Piutang*\n\n")
 
-	// Separate payable and receivable
-	var payables, receivables []*models.Debt
-	for _, d := range debts {
-		if d.Direction == "payable" {
-			payables = append(payables, d)
-		} else {
-			receivables = append(receivables, d)
-		}
-	}
+	sb.WriteString("*Piutang:*\n")
+	sb.WriteString(fmt.Sprintf("Total: %s\n", formatRupiahCompact(totalReceivable)))
+	sb.WriteString(fmt.Sprintf("Aktif: %d orang\n", len(receivables)))
+	sb.WriteString(fmt.Sprintf("Terlambat: %d\n\n", overdueReceivables))
 
-	if len(payables) > 0 {
-		sb.WriteString("💸 *Hutang (lu yang bayar):*\n")
-		for _, d := range payables {
-			remaining := d.Amount - d.PaidAmount
-			line := fmt.Sprintf("  • *%s*: %s", d.PersonName, formatIDRCurrency(remaining))
-			if d.PaidAmount > 0 {
-				line += fmt.Sprintf(" (dibayar %s dari %s)", formatIDRCurrency(d.PaidAmount), formatIDRCurrency(d.Amount))
-			}
-			if d.DueDate != nil {
-				line += fmt.Sprintf(" — jatuh tempo %s", d.DueDate.Format("02 Jan 2006"))
-			}
-			if d.Description != "" {
-				line += fmt.Sprintf(" _%s_", d.Description)
-			}
-			sb.WriteString(line + "\n")
-		}
-		sb.WriteString("\n")
-	}
-
-	if len(receivables) > 0 {
-		sb.WriteString("💰 *Piutang (orang yang bayar ke lu):*\n")
-		for _, d := range receivables {
-			remaining := d.Amount - d.PaidAmount
-			line := fmt.Sprintf("  • *%s*: %s", d.PersonName, formatIDRCurrency(remaining))
-			if d.PaidAmount > 0 {
-				line += fmt.Sprintf(" (diterima %s dari %s)", formatIDRCurrency(d.PaidAmount), formatIDRCurrency(d.Amount))
-			}
-			if d.DueDate != nil {
-				line += fmt.Sprintf(" — jatuh tempo %s", d.DueDate.Format("02 Jan 2006"))
-			}
-			if d.Description != "" {
-				line += fmt.Sprintf(" _%s_", d.Description)
-			}
-			sb.WriteString(line + "\n")
-		}
-		sb.WriteString("\n")
-	}
-
-	sb.WriteString(fmt.Sprintf("📊 *Total Hutang Aktif:* %s\n", formatIDRCurrency(totalPayable)))
-	sb.WriteString(fmt.Sprintf("📊 *Total Piutang Aktif:* %s\n", formatIDRCurrency(totalReceivable)))
+	sb.WriteString("*Hutang:*\n")
+	sb.WriteString(fmt.Sprintf("Total: %s\n", formatRupiahCompact(totalPayable)))
+	sb.WriteString(fmt.Sprintf("Aktif: %d orang\n", len(payables)))
+	sb.WriteString(fmt.Sprintf("Terlambat: %d\n\n", overduePayables))
 
 	netPosition := totalReceivable - totalPayable
+	sb.WriteString("*Net Position:*\n")
 	if netPosition >= 0 {
-		sb.WriteString(fmt.Sprintf("\n✅ *Posisi Bersih:* +%s (piutang lebih besar)", formatIDRCurrency(netPosition)))
+		sb.WriteString(fmt.Sprintf("+%s", formatRupiahCompact(netPosition)))
 	} else {
-		sb.WriteString(fmt.Sprintf("\n⚠️ *Posisi Bersih:* %s (hutang lebih besar)", formatIDRCurrency(netPosition)))
+		sb.WriteString(formatRupiahCompact(netPosition))
+	}
+
+	// Top 5 largest active debts by remaining amount, across both directions.
+	top := make([]*models.Debt, len(debts))
+	copy(top, debts)
+	sort.Slice(top, func(i, j int) bool {
+		return (top[i].Amount - top[i].PaidAmount) > (top[j].Amount - top[j].PaidAmount)
+	})
+	if len(top) > 5 {
+		top = top[:5]
+	}
+
+	sb.WriteString("\n\n*Terbesar:*\n\n")
+	for i, d := range top {
+		dirLabel := "Piutang"
+		if d.Direction == "payable" {
+			dirLabel = "Hutang"
+		}
+		remaining := d.Amount - d.PaidAmount
+		sb.WriteString(fmt.Sprintf("%d. %s - %s %s", i+1, d.PersonName, dirLabel, formatRupiahCompact(remaining)))
+		if i < len(top)-1 {
+			sb.WriteString("\n")
+		}
 	}
 
 	return sb.String(), nil
+}
+
+// formatRupiahCompact formats an amount as Rupiah without a space after "Rp"
+// (e.g. "Rp200.000", "-Rp50.000"), matching the compact dashboard style.
+func formatRupiahCompact(amount int64) string {
+	isNegative := amount < 0
+	if isNegative {
+		amount = -amount
+	}
+
+	s := fmt.Sprintf("%d", amount)
+	var res string
+	if len(s) <= 3 {
+		res = s
+	} else {
+		var bytes []byte
+		n := 0
+		for i := len(s) - 1; i >= 0; i-- {
+			if n > 0 && n%3 == 0 {
+				bytes = append([]byte{'.'}, bytes...)
+			}
+			bytes = append([]byte{s[i]}, bytes...)
+			n++
+		}
+		res = string(bytes)
+	}
+
+	if isNegative {
+		return "-Rp" + res
+	}
+	return "Rp" + res
 }
