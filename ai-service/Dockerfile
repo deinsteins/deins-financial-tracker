@@ -2,9 +2,11 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install build dependencies for compiling native packages if needed
+# Install build dependencies for compiling native packages and the
+# Tesseract OCR engine required by pytesseract at runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install python packages

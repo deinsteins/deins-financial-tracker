@@ -1,9 +1,19 @@
+import io
 import os
 from datetime import datetime
-from fastapi import FastAPI, HTTPException
+
+import pytesseract
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
 from parser_service import ParserService, ParsedTransaction, AnalyzeResponse
+
+# Allowed image upload types for the OCR endpoint
+ALLOWED_OCR_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+ALLOWED_OCR_CONTENT_TYPES = {"image/jpeg", "image/png"}
+# Maximum accepted upload size for the OCR endpoint (10 MB)
+MAX_OCR_BYTES = 10 * 1024 * 1024
 
 app = FastAPI(
     title="Finance Assistant AI Service",
@@ -27,6 +37,10 @@ class TransactionItem(BaseModel):
 class AnalyzeRequest(BaseModel):
     transactions: list[TransactionItem]
 
+class OCRResponse(BaseModel):
+    filename: str = Field(..., example="receipt.jpg")
+    text: str = Field(..., example="Bakso Pak Kumis\nTotal: 25.000")
+
 @app.get("/")
 def read_root():
     return {
@@ -35,7 +49,8 @@ def read_root():
         "endpoints": {
             "health": "/health",
             "parse": "/parse",
-            "analyze": "/analyze"
+            "analyze": "/analyze",
+            "ocr": "/ocr"
         }
     }
 
@@ -69,3 +84,77 @@ def analyze_transactions(request: AnalyzeRequest):
         return analysis_result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to analyze transactions: {str(e)}")
+
+@app.post("/ocr", response_model=OCRResponse)
+async def extract_text_from_image(file: UploadFile = File(...)):
+    # Validate that a filename was provided
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided.")
+
+    # Validate the file extension
+    extension = os.path.splitext(file.filename)[1].lower()
+    if extension not in ALLOWED_OCR_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid file type. Only .jpg, .jpeg, and .png files are supported, "
+                f"got '{extension or 'unknown'}'."
+            ),
+        )
+
+    # Validate the declared content type when available
+    if file.content_type and file.content_type not in ALLOWED_OCR_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid content type '{file.content_type}'. Expected a JPEG or PNG image.",
+        )
+
+    # Reject oversized uploads before buffering them into memory
+    if file.size is not None and file.size > MAX_OCR_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum allowed size is {MAX_OCR_BYTES // (1024 * 1024)} MB.",
+        )
+
+    # Read the uploaded file contents
+    try:
+        contents = await file.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read uploaded file: {str(e)}")
+    finally:
+        await file.close()
+
+    if not contents:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    # Guard against clients that under-report or omit the declared size
+    if len(contents) > MAX_OCR_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum allowed size is {MAX_OCR_BYTES // (1024 * 1024)} MB.",
+        )
+
+    # Open and verify the image with Pillow
+    try:
+        image = Image.open(io.BytesIO(contents))
+        image.load()
+    except UnidentifiedImageError:
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded file is not a valid or is a corrupted image.",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to process image: {str(e)}")
+
+    # Run OCR text extraction
+    try:
+        extracted_text = pytesseract.image_to_string(image)
+    except pytesseract.TesseractNotFoundError:
+        raise HTTPException(
+            status_code=500,
+            detail="OCR engine (Tesseract) is not installed or not available.",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to extract text from image: {str(e)}")
+
+    return OCRResponse(filename=file.filename, text=extracted_text)
