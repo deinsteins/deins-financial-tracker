@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -35,8 +36,68 @@ func NewBotHandler(
 	}
 }
 
+type PendingReceipt struct {
+	ChatID       int64
+	TelegramID   int64
+	MessageID    int
+	Merchant     string
+	Items        []services.OCRReceiptItem
+	Total        int64
+	Date         *string
+	RawText      string
+	AwaitingEdit bool
+	CreatedAt    time.Time
+}
+
+var (
+	pendingReceipts   = make(map[int64]*PendingReceipt)
+	pendingReceiptsMu sync.Mutex
+)
+
+const pendingReceiptTTL = 5 * time.Minute
+
+func setPendingReceipt(chatID int64, pr *PendingReceipt) {
+	pendingReceiptsMu.Lock()
+	defer pendingReceiptsMu.Unlock()
+
+	now := time.Now()
+	for id, existing := range pendingReceipts {
+		if now.Sub(existing.CreatedAt) > pendingReceiptTTL {
+			delete(pendingReceipts, id)
+		}
+	}
+
+	pendingReceipts[chatID] = pr
+}
+
+func getPendingReceipt(chatID int64) *PendingReceipt {
+	pendingReceiptsMu.Lock()
+	defer pendingReceiptsMu.Unlock()
+
+	pr, ok := pendingReceipts[chatID]
+	if !ok {
+		return nil
+	}
+	if time.Since(pr.CreatedAt) > pendingReceiptTTL {
+		delete(pendingReceipts, chatID)
+		return nil
+	}
+	return pr
+}
+
+func deletePendingReceipt(chatID int64) {
+	pendingReceiptsMu.Lock()
+	defer pendingReceiptsMu.Unlock()
+	delete(pendingReceipts, chatID)
+}
+
 func (h *BotHandler) HandleUpdates(updates tgbotapi.UpdatesChannel) {
 	for update := range updates {
+		if update.CallbackQuery != nil {
+			h.handleCallback(update.CallbackQuery)
+			continue
+		}
+
 		if update.Message == nil { // Ignore non-message updates
 			continue
 		}
@@ -124,6 +185,11 @@ func (h *BotHandler) handleCommand(msg *tgbotapi.Message) {
 
 func (h *BotHandler) handleTextMessage(msg *tgbotapi.Message) {
 	log.Printf("Parsing text message with Hermes: %s", msg.Text)
+
+	if pr := getPendingReceipt(msg.Chat.ID); pr != nil && pr.AwaitingEdit {
+		h.handleReceiptAmountEdit(msg, pr)
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -288,6 +354,31 @@ func (h *BotHandler) handleTextMessage(msg *tgbotapi.Message) {
 	_ = h.finance.SaveChatHistory(msg.From.ID, "assistant", intent.Response)
 }
 
+func (h *BotHandler) handleReceiptAmountEdit(msg *tgbotapi.Message, pr *PendingReceipt) {
+	newAmount, err := parseAmount(msg.Text)
+	if err != nil {
+		h.sendReply(msg.Chat.ID, fmt.Sprintf("⚠️ Jumlah tidak valid: %v\n_Coba lagi ya bro!_", err), msg.MessageID)
+		return
+	}
+
+	pr.Total = newAmount
+	pr.AwaitingEdit = false
+	setPendingReceipt(msg.Chat.ID, pr)
+
+	replyText := formatReceiptSummary(&services.OCRReceiptResponse{
+		Merchant: pr.Merchant,
+		Items:    pr.Items,
+		Total:    pr.Total,
+		Date:     pr.Date,
+		RawText:  pr.RawText,
+	}) + "\n_Simpan sebagai transaksi?_"
+
+	h.sendReplyWithKeyboard(msg.Chat.ID, replyText, msg.MessageID, receiptConfirmKeyboard())
+
+	_ = h.finance.SaveChatHistory(msg.From.ID, "user", msg.Text)
+	_ = h.finance.SaveChatHistory(msg.From.ID, "assistant", replyText)
+}
+
 func (h *BotHandler) handlePhotoMessage(msg *tgbotapi.Message) {
 	log.Printf("Received photo from user %s (ChatID: %d)", msg.From.UserName, msg.Chat.ID)
 
@@ -341,8 +432,20 @@ func (h *BotHandler) handlePhotoMessage(msg *tgbotapi.Message) {
 		return
 	}
 
-	replyText := formatReceiptSummary(ocrResult)
-	h.sendReply(msg.Chat.ID, replyText, msg.MessageID)
+	setPendingReceipt(msg.Chat.ID, &PendingReceipt{
+		ChatID:     msg.Chat.ID,
+		TelegramID: msg.From.ID,
+		MessageID:  msg.MessageID,
+		Merchant:   ocrResult.Merchant,
+		Items:      ocrResult.Items,
+		Total:      ocrResult.Total,
+		Date:       ocrResult.Date,
+		RawText:    ocrResult.RawText,
+		CreatedAt:  time.Now(),
+	})
+
+	replyText := formatReceiptSummary(ocrResult) + "\n_Simpan sebagai transaksi?_"
+	h.sendReplyWithKeyboard(msg.Chat.ID, replyText, msg.MessageID, receiptConfirmKeyboard())
 
 	_ = h.finance.SaveChatHistory(msg.From.ID, "user", "[Sent a receipt photo]")
 	_ = h.finance.SaveChatHistory(msg.From.ID, "assistant", replyText)
@@ -380,6 +483,83 @@ func formatReceiptSummary(r *services.OCRReceiptResponse) string {
 	return sb.String()
 }
 
+func (h *BotHandler) handleCallback(cq *tgbotapi.CallbackQuery) {
+	h.bot.Request(tgbotapi.NewCallback(cq.ID, ""))
+
+	chatID := cq.Message.Chat.ID
+	pr := getPendingReceipt(chatID)
+	if pr == nil {
+		edit := tgbotapi.NewEditMessageText(chatID, cq.Message.MessageID,
+			"⏳ _Struk sudah expired, kirim ulang foto ya bro!_")
+		edit.ParseMode = "markdown"
+		h.bot.Send(edit)
+		return
+	}
+
+	switch cq.Data {
+	case "ocr:confirm":
+		desc := formatReceiptDescription(pr)
+		tx, err := h.finance.AddTransaction(pr.TelegramID, "expense", "food", pr.Total, desc, "cash")
+		if err != nil {
+			log.Printf("Failed to save receipt transaction: %v", err)
+			edit := tgbotapi.NewEditMessageText(chatID, cq.Message.MessageID,
+				fmt.Sprintf("⚠️ *Gagal menyimpan transaksi:*\n%v", err))
+			edit.ParseMode = "markdown"
+			h.bot.Send(edit)
+			deletePendingReceipt(chatID)
+			return
+		}
+
+		typeEmoji := "💸 pengeluaran"
+		successText := fmt.Sprintf("✅ *Catatan Berhasil Disimpan!* 🎉\n\n"+
+			"• *Tipe*: %s\n"+
+			"• *Kategori*: food\n"+
+			"• *Jumlah*: %s\n"+
+			"• *Dompet*: cash\n"+
+			"• *Deskripsi*: %s\n\n",
+			typeEmoji, formatIDRCurrency(tx.Amount), desc)
+
+		if alerts, err := h.finance.CheckBudgetAlerts(pr.TelegramID, "food"); err == nil && alerts != "" {
+			successText += alerts
+		}
+
+		edit := tgbotapi.NewEditMessageText(chatID, cq.Message.MessageID, successText)
+		edit.ParseMode = "markdown"
+		h.bot.Send(edit)
+
+		_ = h.finance.SaveChatHistory(pr.TelegramID, "assistant", successText)
+		deletePendingReceipt(chatID)
+
+	case "ocr:edit":
+		pr.AwaitingEdit = true
+		setPendingReceipt(chatID, pr)
+		h.sendReply(chatID, "✏️ _Ketik jumlah baru (contoh: 25rb, 50000):_", cq.Message.MessageID)
+
+	case "ocr:cancel":
+		edit := tgbotapi.NewEditMessageText(chatID, cq.Message.MessageID, "❌ _Struk dibatalkan._")
+		edit.ParseMode = "markdown"
+		h.bot.Send(edit)
+		deletePendingReceipt(chatID)
+
+	default:
+		log.Printf("Unknown receipt callback data: %s", cq.Data)
+	}
+}
+
+func formatReceiptDescription(pr *PendingReceipt) string {
+	itemCount := len(pr.Items)
+	if pr.Merchant != "" && itemCount > 0 {
+		return fmt.Sprintf("%s (%d items)", pr.Merchant, itemCount)
+	}
+	if pr.Merchant != "" {
+		return pr.Merchant
+	}
+	if itemCount > 0 {
+		return fmt.Sprintf("Scan struk (%d items)", itemCount)
+	}
+	return "Scan struk"
+}
+
 func (h *BotHandler) sendReply(chatID int64, text string, replyToMessageID int) {
 	reply := tgbotapi.NewMessage(chatID, text)
 	reply.ReplyToMessageID = replyToMessageID
@@ -388,6 +568,27 @@ func (h *BotHandler) sendReply(chatID int64, text string, replyToMessageID int) 
 	if _, err := h.bot.Send(reply); err != nil {
 		log.Printf("Failed to send message: %v", err)
 	}
+}
+
+func (h *BotHandler) sendReplyWithKeyboard(chatID int64, text string, replyToMessageID int, keyboard tgbotapi.InlineKeyboardMarkup) {
+	reply := tgbotapi.NewMessage(chatID, text)
+	reply.ReplyToMessageID = replyToMessageID
+	reply.ParseMode = "markdown"
+	reply.ReplyMarkup = keyboard
+
+	if _, err := h.bot.Send(reply); err != nil {
+		log.Printf("Failed to send message with keyboard: %v", err)
+	}
+}
+
+func receiptConfirmKeyboard() tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Simpan ✅", "ocr:confirm"),
+			tgbotapi.NewInlineKeyboardButtonData("Edit Jumlah ✏️", "ocr:edit"),
+			tgbotapi.NewInlineKeyboardButtonData("Batal ❌", "ocr:cancel"),
+		),
+	)
 }
 
 func formatIDRCurrency(amount int64) string {
