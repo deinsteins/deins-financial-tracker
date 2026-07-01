@@ -1,6 +1,8 @@
 package repositories
 
 import (
+	"time"
+
 	"finance-bot/bot/models"
 )
 
@@ -55,5 +57,25 @@ type DebtRepository interface {
 	MarkDebtAsPaid(debtID string) error
 	CancelDebt(debtID string) error
 	GetDebtSummary(userID string) (totalPayable int64, totalReceivable int64, err error)
+	GetDueDebtsForReminders(dueOnOrBefore time.Time) ([]*DueDebt, error)
+}
+
+// DueDebt pairs an active debt with the Telegram ID of the user who owns it,
+// so the reminder scheduler can notify the right chat without a separate
+// per-user lookup.
+type DueDebt struct {
+	Debt       *models.Debt
+	TelegramID int64
+}
+
+// DebtReminderRepository tracks which due-date reminders have already been
+// sent, so the daily scheduler never notifies a user twice for the same
+// debt on the same day.
+type DebtReminderRepository interface {
+	// TryRecordReminder atomically records that a reminder of the given type
+	// was sent for a debt on reminderDate. It returns false (without error)
+	// if a reminder was already recorded for that debt on that date, so the
+	// caller can skip sending a duplicate message.
+	TryRecordReminder(debtID, reminderType string, reminderDate time.Time) (bool, error)
 }
 

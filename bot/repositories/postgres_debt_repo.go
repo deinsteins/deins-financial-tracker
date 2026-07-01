@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -148,6 +149,41 @@ func (r *postgresDebtRepository) GetDebtSummary(userID string) (int64, int64, er
 		return 0, 0, fmt.Errorf("postgres_debt_repo: failed to get debt summary: %w", err)
 	}
 	return totalPayable, totalReceivable, nil
+}
+
+// GetDueDebtsForReminders returns active/partial debts with a due_date on or
+// before dueOnOrBefore (i.e. overdue, due today, and due tomorrow candidates
+// in one query), joined with the owning user's Telegram ID.
+func (r *postgresDebtRepository) GetDueDebtsForReminders(dueOnOrBefore time.Time) ([]*DueDebt, error) {
+	query := `SELECT d.id, d.user_id, d.person_name, d.direction, d.amount, d.paid_amount, d.description, d.status, d.due_date, d.created_at, d.updated_at, u.telegram_id
+	          FROM debts d
+	          JOIN users u ON u.id = d.user_id
+	          WHERE d.status IN ('active', 'partial') AND d.due_date IS NOT NULL AND d.due_date <= $1
+	          ORDER BY d.due_date ASC`
+	rows, err := r.pool.Query(context.Background(), query, dueOnOrBefore)
+	if err != nil {
+		return nil, fmt.Errorf("postgres_debt_repo: failed to query due debts: %w", err)
+	}
+	defer rows.Close()
+
+	var result []*DueDebt
+	for rows.Next() {
+		var d models.Debt
+		var telegramID int64
+		err := rows.Scan(
+			&d.ID, &d.UserID, &d.PersonName, &d.Direction,
+			&d.Amount, &d.PaidAmount, &d.Description, &d.Status,
+			&d.DueDate, &d.CreatedAt, &d.UpdatedAt, &telegramID,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("postgres_debt_repo: failed to scan due debt: %w", err)
+		}
+		result = append(result, &DueDebt{Debt: &d, TelegramID: telegramID})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres_debt_repo: row iteration error: %w", err)
+	}
+	return result, nil
 }
 
 func (r *postgresDebtRepository) queryDebts(query string, args ...interface{}) ([]*models.Debt, error) {

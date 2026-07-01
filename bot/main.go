@@ -16,6 +16,7 @@ import (
 	"finance-bot/bot/handlers"
 	"finance-bot/bot/llm"
 	"finance-bot/bot/repositories"
+	"finance-bot/bot/scheduler"
 	"finance-bot/bot/services"
 )
 
@@ -69,6 +70,7 @@ func main() {
 	walletRepo := repositories.NewPostgresWalletRepository(dbPool)
 	chatMemoryRepo := repositories.NewPostgresChatMemoryRepository(dbPool)
 	debtRepo := repositories.NewPostgresDebtRepository(dbPool)
+	debtReminderRepo := repositories.NewPostgresDebtReminderRepository(dbPool)
 
 	// Initialize AI Clients
 	aiClient := services.NewAIClient(cfg.AIServiceURL)
@@ -135,6 +137,11 @@ func main() {
 			handler := handlers.NewBotHandler(bot, financeSvc, orchestrationSvc)
 			go handler.HandleUpdates(updates)
 			log.Println("Started Telegram long polling listener successfully.")
+
+			// Start the daily debt/receivable due-date reminder scheduler (runs at 08:00 server time)
+			debtReminderScheduler := scheduler.NewDebtReminderScheduler(bot, debtRepo, debtReminderRepo)
+			debtReminderScheduler.Start()
+			log.Println("Started debt due-date reminder scheduler successfully.")
 		}
 	}
 
