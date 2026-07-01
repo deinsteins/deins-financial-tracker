@@ -45,6 +45,7 @@ type PendingReceipt struct {
 	Total        int64
 	Date         *string
 	RawText      string
+	Category     string
 	AwaitingEdit bool
 	CreatedAt    time.Time
 }
@@ -89,6 +90,19 @@ func deletePendingReceipt(chatID int64) {
 	pendingReceiptsMu.Lock()
 	defer pendingReceiptsMu.Unlock()
 	delete(pendingReceipts, chatID)
+}
+
+var validCategories = map[string]bool{
+	"food": true, "groceries": true, "shopping": true, "transport": true,
+	"utilities": true, "entertainment": true, "salary": true, "other": true,
+}
+
+func sanitizeCategory(cat string) string {
+	cat = strings.ToLower(strings.TrimSpace(cat))
+	if validCategories[cat] {
+		return cat
+	}
+	return "other"
 }
 
 func (h *BotHandler) HandleUpdates(updates tgbotapi.UpdatesChannel) {
@@ -441,6 +455,7 @@ func (h *BotHandler) handlePhotoMessage(msg *tgbotapi.Message) {
 		Total:      ocrResult.Total,
 		Date:       ocrResult.Date,
 		RawText:    ocrResult.RawText,
+		Category:   sanitizeCategory(ocrResult.Category),
 		CreatedAt:  time.Now(),
 	})
 
@@ -478,6 +493,7 @@ func formatReceiptSummary(r *services.OCRReceiptResponse) string {
 		sb.WriteString("\n")
 	}
 
+	sb.WriteString(fmt.Sprintf("🏷️ *Kategori:* %s\n", sanitizeCategory(r.Category)))
 	sb.WriteString(fmt.Sprintf("💰 *Total:* %s\n", formatIDRCurrency(r.Total)))
 
 	return sb.String()
@@ -498,8 +514,9 @@ func (h *BotHandler) handleCallback(cq *tgbotapi.CallbackQuery) {
 
 	switch cq.Data {
 	case "ocr:confirm":
+		cat := sanitizeCategory(pr.Category)
 		desc := formatReceiptDescription(pr)
-		tx, err := h.finance.AddTransaction(pr.TelegramID, "expense", "food", pr.Total, desc, "cash")
+		tx, err := h.finance.AddTransaction(pr.TelegramID, "expense", cat, pr.Total, desc, "cash")
 		if err != nil {
 			log.Printf("Failed to save receipt transaction: %v", err)
 			edit := tgbotapi.NewEditMessageText(chatID, cq.Message.MessageID,
@@ -513,13 +530,13 @@ func (h *BotHandler) handleCallback(cq *tgbotapi.CallbackQuery) {
 		typeEmoji := "💸 pengeluaran"
 		successText := fmt.Sprintf("✅ *Catatan Berhasil Disimpan!* 🎉\n\n"+
 			"• *Tipe*: %s\n"+
-			"• *Kategori*: food\n"+
+			"• *Kategori*: %s\n"+
 			"• *Jumlah*: %s\n"+
 			"• *Dompet*: cash\n"+
 			"• *Deskripsi*: %s\n\n",
-			typeEmoji, formatIDRCurrency(tx.Amount), desc)
+			typeEmoji, cat, formatIDRCurrency(tx.Amount), desc)
 
-		if alerts, err := h.finance.CheckBudgetAlerts(pr.TelegramID, "food"); err == nil && alerts != "" {
+		if alerts, err := h.finance.CheckBudgetAlerts(pr.TelegramID, cat); err == nil && alerts != "" {
 			successText += alerts
 		}
 

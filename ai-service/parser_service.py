@@ -3,10 +3,12 @@ import re
 import json
 import logging
 import urllib.request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 import google.generativeai as genai
 
 logger = logging.getLogger(__name__)
+
+VALID_CATEGORIES = {"food", "groceries", "shopping", "transport", "utilities", "entertainment", "salary", "other"}
 
 # Pydantic schema for parsing validation
 class ParsedTransaction(BaseModel):
@@ -25,6 +27,15 @@ class ParsedReceipt(BaseModel):
     items: list[ReceiptItem] = Field(default=[], description="List of purchased items")
     total: int = Field(default=0, description="Total amount in IDR as an integer")
     date: str | None = Field(default=None, description="ISO 8601 date string or null if not found")
+    category: str = Field(default="other", description="Inferred transaction category")
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def validate_category(cls, v: str) -> str:
+        if not isinstance(v, str):
+            return "other"
+        v = v.strip().lower()
+        return v if v in VALID_CATEGORIES else "other"
 
 # Pydantic schema for analysis validation
 class AnalyzeResponse(BaseModel):
@@ -100,9 +111,13 @@ def fallback_parse(text: str) -> dict:
     
     # Simple logic for category classification
     category = "other"
-    if any(w in lower_text for w in ["makan", "minum", "bakso", "kopi", "warteg", "food", "dining", "cafe", "restoran"]):
+    if any(w in lower_text for w in ["makan", "minum", "bakso", "kopi", "warteg", "food", "dining", "cafe", "restoran", "starbucks", "kopitiam"]):
         category = "food"
-    elif any(w in lower_text for w in ["ojek", "uber", "gojek", "grab", "bensin", "transport", "mrt", "bus", "kereta"]):
+    elif any(w in lower_text for w in ["indomaret", "alfamart", "supermarket", "belanja bulanan", "grocery", "groceries", "minimarket"]):
+        category = "groceries"
+    elif any(w in lower_text for w in ["tokopedia", "shopee", "lazada", "bukalapak", "mall", "belanja online", "marketplace"]):
+        category = "shopping"
+    elif any(w in lower_text for w in ["ojek", "uber", "gojek", "grab", "bensin", "transport", "mrt", "bus", "kereta", "shell", "pertamina"]):
         category = "transport"
     elif any(w in lower_text for w in ["listrik", "air", "wifi", "internet", "pulsa", "bill", "utilities"]):
         category = "utilities"
@@ -325,7 +340,7 @@ The input text has been normalized to help you: "{preprocessed_text}"
 
 Return a JSON object containing:
 1. "type": "expense" or "income".
-2. "category": a normalized category name (lowercase, e.g., "food", "transport", "utilities", "entertainment", "salary", "other").
+2. "category": a normalized category name (lowercase, one of: "food", "groceries", "shopping", "transport", "utilities", "entertainment", "salary", "other").
 3. "amount": the transaction amount as an integer.
 4. "description": what the transaction was for (exclude the amount or currency symbols, and clean up into friendly informal Indonesian if necessary).
 
@@ -355,7 +370,7 @@ The input text has been normalized to help you: "{preprocessed_text}"
 
 Return a JSON object containing:
 1. "type": "expense" or "income".
-2. "category": a normalized category name (lowercase, e.g., "food", "transport", "utilities", "entertainment", "salary", "other").
+2. "category": a normalized category name (lowercase, one of: "food", "groceries", "shopping", "transport", "utilities", "entertainment", "salary", "other").
 3. "amount": the transaction amount as an integer.
 4. "description": what the transaction was for (exclude the amount or currency symbols, and clean up into friendly informal Indonesian if necessary).
 
@@ -400,6 +415,16 @@ Return a JSON object with:
 2. "items": a list of objects, each with "name" (string), "qty" (integer, default 1), "price" (integer, unit price in IDR, no "Rp" or dots).
 3. "total": the total amount as an integer in IDR (no "Rp", no dots, no commas).
 4. "date": the date on the receipt in ISO 8601 format (e.g. "2026-07-01"), or null if not found.
+5. "category": infer the most likely spending category from the merchant name and items. Must be one of:
+   - "food" — restaurants, cafes, warung, makanan, minuman (e.g. Starbucks, warteg, restoran, cafe)
+   - "groceries" — minimarket, supermarket, grocery store (e.g. Indomaret, Alfamart, supermarket, belanja bulanan)
+   - "shopping" — online marketplace, malls, clothing, electronics (e.g. Tokopedia, Shopee, Lazada, mall)
+   - "transport" — fuel, ride-hailing, public transport (e.g. Shell, Pertamina, Gojek, Grab)
+   - "utilities" — electricity, water, internet, phone bills
+   - "entertainment" — movies, streaming, games, travel
+   - "other" — cannot determine
+
+   Use BOTH merchant name AND item names together. If merchant alone is enough (e.g. "Shell"), prefer it. Fall back to item patterns if merchant is unclear.
 
 Rules:
 - All monetary values MUST be plain integers in IDR (e.g. 25000, not "Rp 25.000" or "25.000").

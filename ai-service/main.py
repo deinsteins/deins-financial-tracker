@@ -51,6 +51,7 @@ class OCRReceiptResponse(BaseModel):
     items: list[ReceiptItem] = Field(default=[])
     total: int = Field(default=0, example=25000)
     date: str | None = Field(default=None, example="2026-07-01")
+    category: str = Field(default="other", example="food")
 
 @app.get("/")
 def read_root():
@@ -187,4 +188,5 @@ async def extract_text_from_image(file: UploadFile = File(...)):
         items=receipt.items,
         total=receipt.total,
         date=receipt.date,
+        category=receipt.category,
     )

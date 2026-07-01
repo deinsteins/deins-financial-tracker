@@ -56,6 +56,7 @@ type OCRReceiptResponse struct {
 	Items    []OCRReceiptItem `json:"items"`
 	Total    int64            `json:"total"`
 	Date     *string          `json:"date"`
+	Category string           `json:"category"`
 }
 
 type AIClient interface {

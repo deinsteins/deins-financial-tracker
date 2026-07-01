@@ -43,8 +43,8 @@ func (t *SaveTransactionTool) Parameters() Parameters {
 			},
 			"category": {
 				Type:        "string",
-				Description: "The category of the transaction. Must be food, transport, utilities, entertainment, salary, or other.",
-				Enum:        []string{"food", "transport", "utilities", "entertainment", "salary", "other"},
+				Description: "The category of the transaction. Must be food, groceries, shopping, transport, utilities, entertainment, salary, or other.",
+				Enum:        []string{"food", "groceries", "shopping", "transport", "utilities", "entertainment", "salary", "other"},
 			},
 			"description": {
 				Type:        "string",
@@ -71,11 +71,12 @@ func (t *SaveTransactionTool) Validate(argsRaw string) (interface{}, error) {
 		return nil, fmt.Errorf("invalid amount: must be positive, got %d", args.Amount)
 	}
 	validCategories := map[string]bool{
-		"food": true, "transport": true, "utilities": true,
+		"food": true, "groceries": true, "shopping": true,
+		"transport": true, "utilities": true,
 		"entertainment": true, "salary": true, "other": true,
 	}
 	if !validCategories[args.Category] {
-		return nil, fmt.Errorf("invalid category: must be one of food, transport, utilities, entertainment, salary, other")
+		return nil, fmt.Errorf("invalid category: must be one of food, groceries, shopping, transport, utilities, entertainment, salary, other")
 	}
 	if args.Description == "" {
 		return nil, fmt.Errorf("invalid description: cannot be empty")
@@ -329,8 +330,8 @@ func (t *SetCategoryBudgetTool) Parameters() Parameters {
 		Properties: map[string]Property{
 			"category": {
 				Type:        "string",
-				Description: "The category for the budget. Must be food, transport, utilities, entertainment, salary, or other.",
-				Enum:        []string{"food", "transport", "utilities", "entertainment", "salary", "other"},
+				Description: "The category for the budget. Must be food, groceries, shopping, transport, utilities, entertainment, salary, or other.",
+				Enum:        []string{"food", "groceries", "shopping", "transport", "utilities", "entertainment", "salary", "other"},
 			},
 			"amount": {
 				Type:        "integer",
@@ -349,11 +350,12 @@ func (t *SetCategoryBudgetTool) Validate(argsRaw string) (interface{}, error) {
 		return nil, fmt.Errorf("invalid JSON payload: %w", err)
 	}
 	validCategories := map[string]bool{
-		"food": true, "transport": true, "utilities": true,
+		"food": true, "groceries": true, "shopping": true,
+		"transport": true, "utilities": true,
 		"entertainment": true, "salary": true, "other": true,
 	}
 	if !validCategories[args.Category] {
-		return nil, fmt.Errorf("invalid category: must be one of food, transport, utilities, entertainment, salary, other")
+		return nil, fmt.Errorf("invalid category: must be one of food, groceries, shopping, transport, utilities, entertainment, salary, other")
 	}
 	if args.Amount <= 0 {
 		return nil, fmt.Errorf("invalid budget amount: must be positive, got %d", args.Amount)
