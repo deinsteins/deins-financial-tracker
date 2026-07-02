@@ -59,6 +59,7 @@ type FinanceService interface {
 	GetNetWorthHistory(telegramID int64) (string, error)
 	CreateDailyNetWorthSnapshot(telegramID int64) (*models.NetWorthSnapshot, error)
 	ParseNetWorthText(text string) (*NetWorthParseResponse, error)
+	PredictCashflow(telegramID int64, targetDate time.Time) (*models.CashflowPrediction, string, error)
 }
 
 type financeService struct {
@@ -74,6 +75,7 @@ type financeService struct {
 	chatMemoryRepo repositories.ChatMemoryRepository
 	debtRepo       repositories.DebtRepository
 	netWorthRepo   repositories.NetWorthRepository
+	cashflowRepo   repositories.CashflowPredictionRepository
 	loc            *time.Location
 }
 
@@ -90,6 +92,7 @@ func NewFinanceService(
 	chatMemoryRepo repositories.ChatMemoryRepository,
 	debtRepo repositories.DebtRepository,
 	netWorthRepo repositories.NetWorthRepository,
+	cashflowRepo repositories.CashflowPredictionRepository,
 ) FinanceService {
 	tz := os.Getenv("TZ")
 	if tz == "" {
@@ -113,6 +116,7 @@ func NewFinanceService(
 		chatMemoryRepo: chatMemoryRepo,
 		debtRepo:       debtRepo,
 		netWorthRepo:   netWorthRepo,
+		cashflowRepo:   cashflowRepo,
 		loc:            loc,
 	}
 }

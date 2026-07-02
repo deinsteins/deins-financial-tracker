@@ -17,6 +17,7 @@ services:
       - ./db/migrations/000002_add_debts.up.sql:/docker-entrypoint-initdb.d/03_debts.sql:ro
       - ./db/migrations/000003_add_debt_reminders.up.sql:/docker-entrypoint-initdb.d/04_debt_reminders.sql:ro
       - ./db/migrations/000004_add_net_worth_tracker.up.sql:/docker-entrypoint-initdb.d/05_net_worth_tracker.sql:ro
+      - ./db/migrations/000005_add_cashflow_predictions.up.sql:/docker-entrypoint-initdb.d/06_cashflow_predictions.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s

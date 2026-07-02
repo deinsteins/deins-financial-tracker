@@ -115,3 +115,18 @@ type NetWorthSnapshot struct {
 	CreatedAt        time.Time `json:"created_at"`
 }
 
+type CashflowPrediction struct {
+	ID                  string    `json:"id"`
+	UserID              string    `json:"user_id"`
+	StartDate           time.Time `json:"start_date"`
+	TargetDate          time.Time `json:"target_date"`
+	AvailableBalance    int64     `json:"available_balance"`
+	DailyBurnRate       int64     `json:"daily_burn_rate"`
+	ProjectedExpense    int64     `json:"projected_expense"`
+	UpcomingObligations int64     `json:"upcoming_obligations"`
+	ProjectedBalance    int64     `json:"projected_balance"`
+	RiskLevel           string    `json:"risk_level"`
+	Insight             string    `json:"insight"`
+	CreatedAt           time.Time `json:"created_at"`
+}
+

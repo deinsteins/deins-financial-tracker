@@ -24,6 +24,11 @@ func (f *fakeUserRepo) GetAllUsers() ([]*models.User, error) {
 	return nil, nil
 }
 
+type fakeCashflowRepo struct{}
+func (f *fakeCashflowRepo) CreatePrediction(prediction *models.CashflowPrediction) error { return nil }
+func (f *fakeCashflowRepo) GetLatestPredictionByUser(userID string) (*models.CashflowPrediction, error) { return nil, nil }
+func (f *fakeCashflowRepo) GetPredictionHistoryByUser(userID string) ([]*models.CashflowPrediction, error) { return nil, nil }
+
 type fakeDebtRepo struct {
 	activeDebts                   []*models.Debt
 	totalPayable, totalReceivable int64
@@ -66,7 +71,7 @@ func newTestFinanceService(t *testing.T, debts []*models.Debt, totalPayable, tot
 	userRepo := &fakeUserRepo{user: &models.User{ID: "user-1", TelegramID: 111}}
 	debtRepo := &fakeDebtRepo{activeDebts: debts, totalPayable: totalPayable, totalReceivable: totalReceivable}
 
-	return NewFinanceService(nil, nil, nil, userRepo, nil, nil, nil, nil, nil, nil, debtRepo, nil)
+	return NewFinanceService(nil, nil, nil, userRepo, nil, nil, nil, nil, nil, nil, debtRepo, nil, &fakeCashflowRepo{})
 }
 
 func ptrTime(t time.Time) *time.Time { return &t }

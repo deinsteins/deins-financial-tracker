@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -207,6 +208,9 @@ func (h *BotHandler) handleCommand(msg *tgbotapi.Message) {
 
 	case "networth":
 		replyText = h.handleNetWorthCommand(msg.From.ID, msg.CommandArguments())
+
+	case "cashflow":
+		replyText = h.handleCashflowCommand(msg.From.ID, msg.CommandArguments())
 
 	default:
 		replyText = "Perintah apaan tuh? Coba cek /start aja biar jelas bro!"
@@ -556,6 +560,10 @@ func (h *BotHandler) handleTextMessage(msg *tgbotapi.Message) {
 		if err != nil {
 			replyText = fmt.Sprintf("⚠️ *Gagal mengambil status net worth:*\n%v", err)
 		}
+		h.sendReply(msg.Chat.ID, replyText, msg.MessageID)
+		return
+	case "🔮 Proyeksi Cashflow":
+		replyText := h.handleCashflowCommand(msg.From.ID, "")
 		h.sendReply(msg.Chat.ID, replyText, msg.MessageID)
 		return
 	case "❌ Hapus Terakhir":
@@ -1021,10 +1029,11 @@ func GetMainMenuKeyboard() tgbotapi.ReplyKeyboardMarkup {
 			tgbotapi.NewKeyboardButton("💰 Cek Net Worth"),
 		),
 		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("🔮 Proyeksi Cashflow"),
 			tgbotapi.NewKeyboardButton("📋 Menu Budget"),
-			tgbotapi.NewKeyboardButton("🤝 Kelola Hutang"),
 		),
 		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("🤝 Kelola Hutang"),
 			tgbotapi.NewKeyboardButton("❌ Hapus Terakhir"),
 		),
 	)
@@ -1608,5 +1617,55 @@ func (h *BotHandler) handleNetWorthCommand(telegramID int64, args string) string
 	default:
 		return "⚠️ Sub-perintah tidak dikenal.\n\nGunakan:\n• `/networth` — Lihat status net worth saat ini\n• `/networth history` — Lihat riwayat perkembangan net worth"
 	}
+}
+
+func (h *BotHandler) handleCashflowCommand(telegramID int64, args string) string {
+	args = strings.TrimSpace(args)
+	tz := os.Getenv("TZ")
+	if tz == "" {
+		tz = "Asia/Jakarta"
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		loc = time.UTC
+	}
+	now := time.Now().In(loc)
+
+	var targetDate time.Time
+
+	if args == "" {
+		// predicts until end of current month
+		targetDate = time.Date(now.Year(), now.Month(), 1, 23, 59, 59, 0, loc).AddDate(0, 1, -1)
+	} else {
+		parts := strings.Fields(args)
+		if len(parts) == 1 {
+			// cashflow <days>
+			days, err := strconv.Atoi(parts[0])
+			if err != nil || days <= 0 {
+				return "⚠️ *Format perintah salah!*\n\nGunakan:\n• `/cashflow` — Prediksi sampai akhir bulan ini\n• `/cashflow <hari>` — Prediksi n hari ke depan (misal: `/cashflow 30`)\n• `/cashflow payday <tanggal>` — Prediksi sampai gajian berikutnya (misal: `/cashflow payday 25`)"
+			}
+			targetDate = now.AddDate(0, 0, days)
+		} else if len(parts) == 2 && strings.ToLower(parts[0]) == "payday" {
+			// cashflow payday <date>
+			payday, err := strconv.Atoi(parts[1])
+			if err != nil || payday < 1 || payday > 31 {
+				return "⚠️ *Tanggal gajian tidak valid!* Pilih tanggal antara 1 s/d 31."
+			}
+			// If today's day is less than payday, it's this month. Else next month.
+			if now.Day() < payday {
+				targetDate = time.Date(now.Year(), now.Month(), payday, 23, 59, 59, 0, loc)
+			} else {
+				targetDate = time.Date(now.Year(), now.Month(), payday, 23, 59, 59, 0, loc).AddDate(0, 1, 0)
+			}
+		} else {
+			return "⚠️ *Format perintah salah!*\n\nGunakan:\n• `/cashflow` — Prediksi sampai akhir bulan ini\n• `/cashflow <hari>` — Prediksi n hari ke depan (misal: `/cashflow 30`)\n• `/cashflow payday <tanggal>` — Prediksi sampai gajian berikutnya (misal: `/cashflow payday 25`)"
+		}
+	}
+
+	_, msg, err := h.finance.PredictCashflow(telegramID, targetDate)
+	if err != nil {
+		return fmt.Sprintf("⚠️ *Gagal menghitung proyeksi cashflow:*\n%v", err)
+	}
+	return msg
 }
 

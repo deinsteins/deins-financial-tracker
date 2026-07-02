@@ -99,3 +99,9 @@ type NetWorthRepository interface {
 	GetNetWorthHistory(userID string) ([]*models.NetWorthSnapshot, error)
 }
 
+type CashflowPredictionRepository interface {
+	CreatePrediction(prediction *models.CashflowPrediction) error
+	GetLatestPredictionByUser(userID string) (*models.CashflowPrediction, error)
+	GetPredictionHistoryByUser(userID string) ([]*models.CashflowPrediction, error)
+}
+
