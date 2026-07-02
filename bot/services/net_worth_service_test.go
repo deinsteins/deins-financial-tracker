@@ -64,10 +64,12 @@ func TestFinanceService_NetWorthTracker(t *testing.T) {
 	fakeUser := &models.User{ID: "user-1", TelegramID: 111}
 	userRepo := &fakeUserRepo{user: fakeUser}
 	netWorthRepo := &fakeNetWorthRepo{}
+	debtRepo := &fakeDebtRepo{} // no active debts
 
 	svc := &financeService{
 		userRepo:     userRepo,
 		netWorthRepo: netWorthRepo,
+		debtRepo:     debtRepo,
 		loc:          time.UTC,
 	}
 
@@ -95,13 +97,13 @@ func TestFinanceService_NetWorthTracker(t *testing.T) {
 		t.Fatalf("unexpected error getting net worth status: %v", err)
 	}
 
-	if !strings.Contains(status, "Total Assets:\nRp 10.000.000") {
+	if !strings.Contains(status, "*Total Assets:* Rp 10.000.000") {
 		t.Errorf("expected total assets Rp 10.000.000, got: %s", status)
 	}
-	if !strings.Contains(status, "Total Liabilities:\nRp 2.000.000") {
+	if !strings.Contains(status, "*Total Liabilities:* Rp 2.000.000") {
 		t.Errorf("expected total liabilities Rp 2.000.000, got: %s", status)
 	}
-	if !strings.Contains(status, "Net Worth:\nRp 8.000.000") {
+	if !strings.Contains(status, "*Net Worth:* Rp 8.000.000") {
 		t.Errorf("expected net worth Rp 8.000.000, got: %s", status)
 	}
 
@@ -115,10 +117,67 @@ func TestFinanceService_NetWorthTracker(t *testing.T) {
 	}
 }
 
+func TestFinanceService_NetWorthDebtIntegration(t *testing.T) {
+	fakeUser := &models.User{ID: "user-1", TelegramID: 111}
+	userRepo := &fakeUserRepo{user: fakeUser}
+	netWorthRepo := &fakeNetWorthRepo{
+		assets: []*models.Asset{
+			{AssetType: "bank", Name: "BCA", Amount: 10000000},
+		},
+		liabilities: []*models.Liability{
+			{LiabilityType: "loan", Name: "KPR", Amount: 2000000},
+		},
+	}
+	// 1 receivable (Andi owes me 500k), 1 payable (I owe Budi 300k)
+	debtRepo := &fakeDebtRepo{
+		activeDebts: []*models.Debt{
+			{ID: "d1", PersonName: "Andi", Direction: "receivable", Amount: 500000, PaidAmount: 0},
+			{ID: "d2", PersonName: "Budi", Direction: "payable", Amount: 300000, PaidAmount: 0},
+		},
+	}
+
+	svc := &financeService{
+		userRepo:     userRepo,
+		netWorthRepo: netWorthRepo,
+		debtRepo:     debtRepo,
+		loc:          time.UTC,
+	}
+
+	status, err := svc.GetNetWorthStatus(111)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// total assets = 10_000_000 + 500_000 = 10_500_000
+	if !strings.Contains(status, "*Total Assets:* Rp 10.500.000") {
+		t.Errorf("expected total assets Rp 10.500.000, got: %s", status)
+	}
+	// total liabilities = 2_000_000 + 300_000 = 2_300_000
+	if !strings.Contains(status, "*Total Liabilities:* Rp 2.300.000") {
+		t.Errorf("expected total liabilities Rp 2.300.000, got: %s", status)
+	}
+	// receivables section shown
+	if !strings.Contains(status, "Receivables (Piutang)") {
+		t.Errorf("expected receivables breakdown in output, got: %s", status)
+	}
+	// payables section shown
+	if !strings.Contains(status, "Payables (Hutang)") {
+		t.Errorf("expected payables breakdown in output, got: %s", status)
+	}
+	// individual names shown
+	if !strings.Contains(status, "Andi") {
+		t.Errorf("expected Andi in receivables list, got: %s", status)
+	}
+	if !strings.Contains(status, "Budi") {
+		t.Errorf("expected Budi in payables list, got: %s", status)
+	}
+}
+
 func TestFinanceService_NetWorthWarnings(t *testing.T) {
 	fakeUser := &models.User{ID: "user-1", TelegramID: 111}
 	userRepo := &fakeUserRepo{user: fakeUser}
-	
+	emptyDebtRepo := &fakeDebtRepo{}
+
 	// Case 1: Negative net worth
 	netWorthRepo1 := &fakeNetWorthRepo{
 		assets: []*models.Asset{
@@ -128,7 +187,7 @@ func TestFinanceService_NetWorthWarnings(t *testing.T) {
 			{LiabilityType: "loan", Name: "Debt", Amount: 1500000},
 		},
 	}
-	svc1 := &financeService{userRepo: userRepo, netWorthRepo: netWorthRepo1, loc: time.UTC}
+	svc1 := &financeService{userRepo: userRepo, netWorthRepo: netWorthRepo1, debtRepo: emptyDebtRepo, loc: time.UTC}
 	status1, _ := svc1.GetNetWorthStatus(111)
 	if !strings.Contains(status1, "Peringatan: Net worth kamu negatif!") {
 		t.Errorf("expected warning for negative net worth, got: %s", status1)
@@ -143,7 +202,7 @@ func TestFinanceService_NetWorthWarnings(t *testing.T) {
 			{LiabilityType: "loan", Name: "Debt", Amount: 600000},
 		},
 	}
-	svc2 := &financeService{userRepo: userRepo, netWorthRepo: netWorthRepo2, loc: time.UTC}
+	svc2 := &financeService{userRepo: userRepo, netWorthRepo: netWorthRepo2, debtRepo: emptyDebtRepo, loc: time.UTC}
 	status2, _ := svc2.GetNetWorthStatus(111)
 	if !strings.Contains(status2, "Peringatan Risiko: Total kewajiban kamu melebihi 50% dari total aset!") {
 		t.Errorf("expected risk warning for liabilities > 50%% of assets, got: %s", status2)
@@ -152,3 +211,4 @@ func TestFinanceService_NetWorthWarnings(t *testing.T) {
 
 // Ensure interface compliance
 var _ repositories.NetWorthRepository = (*fakeNetWorthRepo)(nil)
+

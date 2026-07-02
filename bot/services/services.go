@@ -1318,32 +1318,61 @@ func (s *financeService) GetNetWorthStatus(telegramID int64) (string, error) {
 		return "", err
 	}
 
+	// Fetch manual assets & liabilities
 	assets, err := s.netWorthRepo.GetAssetsByUser(user.ID)
 	if err != nil {
 		return "", err
 	}
-
 	liabilities, err := s.netWorthRepo.GetLiabilitiesByUser(user.ID)
 	if err != nil {
 		return "", err
 	}
 
-	// Calculate totals and breakdowns
-	var totalAssets, totalLiabilities int64
+	// Fetch active debts for dynamic integration
+	activeDebts, err := s.debtRepo.GetActiveDebtsByUser(user.ID)
+	if err != nil {
+		return "", err
+	}
+
+	// --- Totals: manual ---
+	var manualAssets, manualLiabilities int64
 	assetBreakdown := make(map[string]int64)
 	liabBreakdown := make(map[string]int64)
-
 	for _, a := range assets {
-		totalAssets += a.Amount
+		manualAssets += a.Amount
 		assetBreakdown[a.AssetType] += a.Amount
 	}
 	for _, l := range liabilities {
-		totalLiabilities += l.Amount
+		manualLiabilities += l.Amount
 		liabBreakdown[l.LiabilityType] += l.Amount
 	}
+
+	// --- Totals: debts (remaining = Amount - PaidAmount) ---
+	var totalReceivables, totalPayables int64
+	type debtEntry struct {
+		name   string
+		amount int64
+	}
+	var receivableList, payableList []debtEntry
+	for _, d := range activeDebts {
+		remaining := d.Amount - d.PaidAmount
+		if remaining <= 0 {
+			continue
+		}
+		if d.Direction == "receivable" {
+			totalReceivables += remaining
+			receivableList = append(receivableList, debtEntry{name: d.PersonName, amount: remaining})
+		} else {
+			totalPayables += remaining
+			payableList = append(payableList, debtEntry{name: d.PersonName, amount: remaining})
+		}
+	}
+
+	totalAssets := manualAssets + totalReceivables
+	totalLiabilities := manualLiabilities + totalPayables
 	netWorth := totalAssets - totalLiabilities
 
-	// Create or update daily snapshot
+	// Save daily snapshot (includes debt-integrated totals)
 	snapshot := &models.NetWorthSnapshot{
 		UserID:           user.ID,
 		TotalAssets:      totalAssets,
@@ -1355,15 +1384,14 @@ func (s *financeService) GetNetWorthStatus(telegramID int64) (string, error) {
 
 	var msg strings.Builder
 	msg.WriteString("📊 *Net Worth Summary*\n\n")
-	msg.WriteString(fmt.Sprintf("Total Assets:\n%s\n\n", formatIDRCurrency(totalAssets)))
-	msg.WriteString(fmt.Sprintf("Total Liabilities:\n%s\n\n", formatIDRCurrency(totalLiabilities)))
-	msg.WriteString(fmt.Sprintf("Net Worth:\n%s\n\n", formatIDRCurrency(netWorth)))
+	msg.WriteString(fmt.Sprintf("*Total Assets:* %s\n", formatIDRCurrency(totalAssets)))
+	msg.WriteString(fmt.Sprintf("*Total Liabilities:* %s\n", formatIDRCurrency(totalLiabilities)))
+	msg.WriteString(fmt.Sprintf("*Net Worth:* %s\n\n", formatIDRCurrency(netWorth)))
 
-	// Assets breakdown (by type)
-	msg.WriteString("Assets:\n")
-	if len(assetBreakdown) == 0 {
-		msg.WriteString("_Belum ada aset recorded._\n")
-	} else {
+	// --- Assets breakdown ---
+	msg.WriteString("🟢 *Assets:*\n")
+	// Manual assets by type
+	if len(assetBreakdown) > 0 {
 		var assetTypes []string
 		for t := range assetBreakdown {
 			assetTypes = append(assetTypes, t)
@@ -1371,16 +1399,32 @@ func (s *financeService) GetNetWorthStatus(telegramID int64) (string, error) {
 		sort.Strings(assetTypes)
 		for _, t := range assetTypes {
 			typeName := strings.Title(strings.ToLower(t))
-			msg.WriteString(fmt.Sprintf("• %s: %s\n", typeName, formatIDRCurrency(assetBreakdown[t])))
+			msg.WriteString(fmt.Sprintf("  • %s: %s\n", typeName, formatIDRCurrency(assetBreakdown[t])))
+		}
+	} else {
+		msg.WriteString("  _Belum ada aset manual._\n")
+	}
+	// Receivables
+	if totalReceivables > 0 {
+		msg.WriteString(fmt.Sprintf("  • Receivables (Piutang): %s\n", formatIDRCurrency(totalReceivables)))
+		sort.Slice(receivableList, func(i, j int) bool { return receivableList[i].amount > receivableList[j].amount })
+		limit := len(receivableList)
+		if limit > 3 {
+			limit = 3
+		}
+		for i := 0; i < limit; i++ {
+			msg.WriteString(fmt.Sprintf("    ↳ %s: %s\n", receivableList[i].name, formatIDRCurrency(receivableList[i].amount)))
+		}
+		if len(receivableList) > 3 {
+			msg.WriteString(fmt.Sprintf("    ↳ +%d lainnya\n", len(receivableList)-3))
 		}
 	}
 	msg.WriteString("\n")
 
-	// Liabilities breakdown (by type)
-	msg.WriteString("Liabilities:\n")
-	if len(liabBreakdown) == 0 {
-		msg.WriteString("_Belum ada kewajiban recorded._\n")
-	} else {
+	// --- Liabilities breakdown ---
+	msg.WriteString("🔴 *Liabilities:*\n")
+	// Manual liabilities by type
+	if len(liabBreakdown) > 0 {
 		var liabTypes []string
 		for t := range liabBreakdown {
 			liabTypes = append(liabTypes, t)
@@ -1388,19 +1432,32 @@ func (s *financeService) GetNetWorthStatus(telegramID int64) (string, error) {
 		sort.Strings(liabTypes)
 		for _, t := range liabTypes {
 			typeName := strings.Title(strings.ToLower(t))
-			msg.WriteString(fmt.Sprintf("• %s: %s\n", typeName, formatIDRCurrency(liabBreakdown[t])))
+			msg.WriteString(fmt.Sprintf("  • %s: %s\n", typeName, formatIDRCurrency(liabBreakdown[t])))
+		}
+	} else {
+		msg.WriteString("  _Belum ada kewajiban manual._\n")
+	}
+	// Payables
+	if totalPayables > 0 {
+		msg.WriteString(fmt.Sprintf("  • Payables (Hutang): %s\n", formatIDRCurrency(totalPayables)))
+		sort.Slice(payableList, func(i, j int) bool { return payableList[i].amount > payableList[j].amount })
+		limit := len(payableList)
+		if limit > 3 {
+			limit = 3
+		}
+		for i := 0; i < limit; i++ {
+			msg.WriteString(fmt.Sprintf("    ↳ %s: %s\n", payableList[i].name, formatIDRCurrency(payableList[i].amount)))
+		}
+		if len(payableList) > 3 {
+			msg.WriteString(fmt.Sprintf("    ↳ +%d lainnya\n", len(payableList)-3))
 		}
 	}
 	msg.WriteString("\n")
 
-	// Top 5 Assets
-	msg.WriteString("*Top 5 Assets:*\n")
-	if len(assets) == 0 {
-		msg.WriteString("_Belum ada aset recorded._\n")
-	} else {
-		sort.Slice(assets, func(i, j int) bool {
-			return assets[i].Amount > assets[j].Amount
-		})
+	// --- Top 5 Assets (manual only, sorted by amount) ---
+	if len(assets) > 0 {
+		msg.WriteString("*Top 5 Assets:*\n")
+		sort.Slice(assets, func(i, j int) bool { return assets[i].Amount > assets[j].Amount })
 		limit := len(assets)
 		if limit > 5 {
 			limit = 5
@@ -1408,17 +1465,13 @@ func (s *financeService) GetNetWorthStatus(telegramID int64) (string, error) {
 		for i := 0; i < limit; i++ {
 			msg.WriteString(fmt.Sprintf("%d. %s: %s\n", i+1, assets[i].Name, formatIDRCurrency(assets[i].Amount)))
 		}
+		msg.WriteString("\n")
 	}
-	msg.WriteString("\n")
 
-	// Top 5 Liabilities
-	msg.WriteString("*Top 5 Liabilities:*\n")
-	if len(liabilities) == 0 {
-		msg.WriteString("_Belum ada kewajiban recorded._\n")
-	} else {
-		sort.Slice(liabilities, func(i, j int) bool {
-			return liabilities[i].Amount > liabilities[j].Amount
-		})
+	// --- Top 5 Liabilities (manual only, sorted by amount) ---
+	if len(liabilities) > 0 {
+		msg.WriteString("*Top 5 Liabilities:*\n")
+		sort.Slice(liabilities, func(i, j int) bool { return liabilities[i].Amount > liabilities[j].Amount })
 		limit := len(liabilities)
 		if limit > 5 {
 			limit = 5
@@ -1426,25 +1479,34 @@ func (s *financeService) GetNetWorthStatus(telegramID int64) (string, error) {
 		for i := 0; i < limit; i++ {
 			msg.WriteString(fmt.Sprintf("%d. %s: %s\n", i+1, liabilities[i].Name, formatIDRCurrency(liabilities[i].Amount)))
 		}
+		msg.WriteString("\n")
 	}
-	msg.WriteString("\n")
 
-	// Insight and warnings
+	// --- Insight ---
 	msg.WriteString("Insight:\n")
-	
+
+	// Find largest combined asset category
+	allAssetBreakdown := make(map[string]int64)
+	for k, v := range assetBreakdown {
+		allAssetBreakdown[strings.Title(strings.ToLower(k))] += v
+	}
+	if totalReceivables > 0 {
+		allAssetBreakdown["Receivables"] += totalReceivables
+	}
+
 	var largestAssetType string
 	var largestAssetAmount int64
-	for t, amt := range assetBreakdown {
+	for t, amt := range allAssetBreakdown {
 		if amt > largestAssetAmount {
 			largestAssetAmount = amt
-			largestAssetType = strings.Title(strings.ToLower(t))
+			largestAssetType = t
 		}
 	}
 
 	if netWorth < 0 {
-		msg.WriteString("⚠️ *Peringatan: Net worth kamu negatif! Kewajiban kamu lebih besar dari aset.*")
+		msg.WriteString("⚠️ Peringatan: Net worth kamu negatif! Kewajiban kamu lebih besar dari aset.")
 	} else if totalAssets > 0 && totalLiabilities > totalAssets/2 {
-		msg.WriteString("⚠️ *Peringatan Risiko: Total kewajiban kamu melebihi 50% dari total aset!*")
+		msg.WriteString("⚠️ Peringatan Risiko: Total kewajiban kamu melebihi 50% dari total aset!")
 		if largestAssetType != "" {
 			msg.WriteString(fmt.Sprintf(" Asset terbesar ada di kategori %s.", largestAssetType))
 		}
