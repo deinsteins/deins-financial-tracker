@@ -98,7 +98,15 @@ func (r *postgresWalletRepository) UpdateBalance(walletID string, amount int64) 
 }
 
 func (r *postgresWalletRepository) GetByUserID(userID string) ([]*models.Wallet, error) {
-	query := `SELECT id, user_id, name, balance, created_at FROM wallets WHERE user_id = $1 ORDER BY name ASC`
+	query := `
+		SELECT w.id, w.user_id, w.name, 
+		       COALESCE(SUM(CASE WHEN t.type = 'income' THEN t.amount ELSE -t.amount END), 0) as balance,
+		       w.created_at 
+		FROM wallets w
+		LEFT JOIN transactions t ON t.wallet_id = w.id
+		WHERE w.user_id = $1 
+		GROUP BY w.id, w.user_id, w.name, w.created_at
+		ORDER BY w.name ASC`
 	rows, err := r.pool.Query(context.Background(), query, userID)
 	if err != nil {
 		return nil, fmt.Errorf("postgres_wallet_repo: failed to fetch wallets: %w", err)
