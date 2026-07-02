@@ -21,6 +21,8 @@ func (f *fakeUserRepo) UpdateCycleStartDay(userID string, startDay int) error  {
 type fakeDebtRepo struct {
 	activeDebts                   []*models.Debt
 	totalPayable, totalReceivable int64
+	debtsByPerson                 []*models.Debt
+	paymentsByPerson              []*models.DebtPayment
 }
 
 func (f *fakeDebtRepo) CreateDebt(debt *models.Debt) error { return nil }
@@ -43,6 +45,12 @@ func (f *fakeDebtRepo) GetDebtSummary(userID string) (int64, int64, error) {
 }
 func (f *fakeDebtRepo) GetDueDebtsForReminders(dueOnOrBefore time.Time) ([]*repositories.DueDebt, error) {
 	return nil, nil
+}
+func (f *fakeDebtRepo) GetDebtsByPerson(userID string, personName string) ([]*models.Debt, error) {
+	return f.debtsByPerson, nil
+}
+func (f *fakeDebtRepo) GetPaymentsByPerson(userID string, personName string) ([]*models.DebtPayment, error) {
+	return f.paymentsByPerson, nil
 }
 
 func newTestFinanceService(t *testing.T, debts []*models.Debt, totalPayable, totalReceivable int64) FinanceService {
@@ -160,5 +168,85 @@ func TestFormatRupiahCompact(t *testing.T) {
 		if got := formatRupiahCompact(amount); got != want {
 			t.Errorf("formatRupiahCompact(%d) = %q, want %q", amount, got, want)
 		}
+	}
+}
+
+func TestFinanceService_GetDebtDetail(t *testing.T) {
+	fakeUser := &models.User{ID: "user-1", TelegramID: 111}
+	userRepo := &fakeUserRepo{user: fakeUser}
+
+	date1 := time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC)
+	debts := []*models.Debt{
+		{
+			ID:          "debt-1",
+			UserID:      "user-1",
+			PersonName:  "Andi",
+			Direction:   "receivable",
+			Amount:      500000,
+			PaidAmount:  200000,
+			Status:      "partial",
+			DueDate:     &date1,
+			Description: "makan bersama",
+		},
+	}
+	debtRepo := &fakeDebtRepo{
+		debtsByPerson: debts,
+	}
+
+	svc := &financeService{
+		userRepo: userRepo,
+		debtRepo: debtRepo,
+		loc:      time.UTC,
+	}
+
+	detail, err := svc.GetDebtDetail(111, "Andi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(detail, "Detail Hutang/Piutang: Andi") {
+		t.Errorf("expected header in detail, got: %s", detail)
+	}
+	if !strings.Contains(detail, "Sisa Hutang:* Rp 300.000") {
+		t.Errorf("expected sisa Rp 300.000, got: %s", detail)
+	}
+	if !strings.Contains(detail, "Status:* 🟡 Cicil (Dibayar Sebagian)") {
+		t.Errorf("expected status, got: %s", detail)
+	}
+}
+
+func TestFinanceService_GetDebtHistory(t *testing.T) {
+	fakeUser := &models.User{ID: "user-1", TelegramID: 111}
+	userRepo := &fakeUserRepo{user: fakeUser}
+
+	payments := []*models.DebtPayment{
+		{
+			ID:     "pay-1",
+			DebtID: "debt-1",
+			Amount: 200000,
+			Note:   "Cicil makan bersama",
+			PaidAt: time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC),
+		},
+	}
+	debtRepo := &fakeDebtRepo{
+		paymentsByPerson: payments,
+	}
+
+	svc := &financeService{
+		userRepo: userRepo,
+		debtRepo: debtRepo,
+		loc:      time.UTC,
+	}
+
+	history, err := svc.GetDebtHistory(111, "Andi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(history, "Riwayat Pembayaran Hutang: Andi") {
+		t.Errorf("expected header, got: %s", history)
+	}
+	if !strings.Contains(history, "Cicil makan bersama") {
+		t.Errorf("expected payment note, got: %s", history)
 	}
 }

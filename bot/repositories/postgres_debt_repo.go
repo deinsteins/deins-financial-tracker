@@ -213,3 +213,38 @@ func (r *postgresDebtRepository) queryDebts(query string, args ...interface{}) (
 
 	return debts, nil
 }
+
+func (r *postgresDebtRepository) GetDebtsByPerson(userID string, personName string) ([]*models.Debt, error) {
+	query := `SELECT id, user_id, person_name, direction, amount, paid_amount, description, status, due_date, created_at, updated_at
+	          FROM debts
+	          WHERE user_id = $1 AND LOWER(person_name) = LOWER($2)
+	          ORDER BY created_at DESC`
+	return r.queryDebts(query, userID, personName)
+}
+
+func (r *postgresDebtRepository) GetPaymentsByPerson(userID string, personName string) ([]*models.DebtPayment, error) {
+	query := `SELECT dp.id, dp.debt_id, dp.amount, dp.note, dp.paid_at
+	          FROM debt_payments dp
+	          JOIN debts d ON d.id = dp.debt_id
+	          WHERE d.user_id = $1 AND LOWER(d.person_name) = LOWER($2)
+	          ORDER BY dp.paid_at DESC`
+	rows, err := r.pool.Query(context.Background(), query, userID, personName)
+	if err != nil {
+		return nil, fmt.Errorf("postgres_debt_repo: failed to query debt payments by person: %w", err)
+	}
+	defer rows.Close()
+
+	var payments []*models.DebtPayment
+	for rows.Next() {
+		var p models.DebtPayment
+		err := rows.Scan(&p.ID, &p.DebtID, &p.Amount, &p.Note, &p.PaidAt)
+		if err != nil {
+			return nil, fmt.Errorf("postgres_debt_repo: failed to scan debt payment: %w", err)
+		}
+		payments = append(payments, &p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres_debt_repo: row iteration error: %w", err)
+	}
+	return payments, nil
+}

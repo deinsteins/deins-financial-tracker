@@ -56,6 +56,8 @@ type DebtRepository interface {
 	GetDebtsByUser(userID string) ([]*models.Debt, error)
 	GetActiveDebtsByUser(userID string) ([]*models.Debt, error)
 	GetDebtByPersonName(userID string, personName string) ([]*models.Debt, error)
+	GetDebtsByPerson(userID string, personName string) ([]*models.Debt, error)
+	GetPaymentsByPerson(userID string, personName string) ([]*models.DebtPayment, error)
 	AddDebtPayment(payment *models.DebtPayment, newPaidAmount int64, newStatus string) error
 	MarkDebtAsPaid(debtID string) error
 	CancelDebt(debtID string) error

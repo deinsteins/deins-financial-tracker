@@ -44,6 +44,8 @@ type FinanceService interface {
 	DeleteTransaction(telegramID int64, txID string) (*models.Transaction, error)
 	DeleteLastTransaction(telegramID int64) (*models.Transaction, error)
 	SetBudgetCycleStartDay(telegramID int64, startDay int) (string, error)
+	GetDebtDetail(telegramID int64, personName string) (string, error)
+	GetDebtHistory(telegramID int64, personName string) (string, error)
 }
 
 type financeService struct {
@@ -1085,4 +1087,101 @@ func getBudgetCycleRange(now time.Time, cycleStartDay int) (time.Time, time.Time
 	endTime := time.Date(endYear, endMonth, eDay, 0, 0, 0, 0, now.Location()).Add(-time.Nanosecond)
 
 	return startTime, endTime
+}
+
+func (s *financeService) GetDebtDetail(telegramID int64, personName string) (string, error) {
+	user, err := s.getOrCreateUser(telegramID, "Telegram User")
+	if err != nil {
+		return "", err
+	}
+
+	personName = strings.TrimSpace(personName)
+	debts, err := s.debtRepo.GetDebtsByPerson(user.ID, personName)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch debts: %w", err)
+	}
+
+	if len(debts) == 0 {
+		return fmt.Sprintf("⚠️ Tidak ditemukan catatan hutang untuk *%s*.", personName), nil
+	}
+
+	var msg strings.Builder
+	msg.WriteString(fmt.Sprintf("👤 *Detail Hutang/Piutang: %s*\n\n", personName))
+
+	for i, d := range debts {
+		remaining := d.Amount - d.PaidAmount
+		
+		statusStr := ""
+		switch d.Status {
+		case "active":
+			statusStr = "🟡 Aktif (Belum Dibayar)"
+		case "partial":
+			statusStr = "🟡 Cicil (Dibayar Sebagian)"
+		case "paid":
+			statusStr = "🟢 Lunas"
+		case "cancelled":
+			statusStr = "🔴 Batal"
+		default:
+			statusStr = d.Status
+		}
+
+		dirStr := "Hutang lu ke dia (payable)"
+		if d.Direction == "receivable" {
+			dirStr = "Hutang dia ke lu (receivable)"
+		}
+
+		dueDateStr := "tidak ada"
+		if d.DueDate != nil {
+			dueDateStr = d.DueDate.In(s.loc).Format("02 Jan 2006")
+		}
+
+		descStr := "-"
+		if strings.TrimSpace(d.Description) != "" {
+			descStr = d.Description
+		}
+
+		msg.WriteString(fmt.Sprintf("*Hutang #%d:*\n", i+1))
+		msg.WriteString(fmt.Sprintf("• *Tipe:* %s\n", dirStr))
+		msg.WriteString(fmt.Sprintf("• *Jumlah Awal:* %s\n", formatIDRCurrency(d.Amount)))
+		msg.WriteString(fmt.Sprintf("• *Sudah Dibayar:* %s\n", formatIDRCurrency(d.PaidAmount)))
+		msg.WriteString(fmt.Sprintf("• *Sisa Hutang:* %s\n", formatIDRCurrency(remaining)))
+		msg.WriteString(fmt.Sprintf("• *Tanggal Jatuh Tempo:* %s\n", dueDateStr))
+		msg.WriteString(fmt.Sprintf("• *Status:* %s\n", statusStr))
+		msg.WriteString(fmt.Sprintf("• *Keterangan:* %s\n\n", descStr))
+	}
+
+	return msg.String(), nil
+}
+
+func (s *financeService) GetDebtHistory(telegramID int64, personName string) (string, error) {
+	user, err := s.getOrCreateUser(telegramID, "Telegram User")
+	if err != nil {
+		return "", err
+	}
+
+	personName = strings.TrimSpace(personName)
+	payments, err := s.debtRepo.GetPaymentsByPerson(user.ID, personName)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch debt history: %w", err)
+	}
+
+	if len(payments) == 0 {
+		return fmt.Sprintf("⚠️ Belum ada riwayat pembayaran hutang untuk *%s*.", personName), nil
+	}
+
+	var msg strings.Builder
+	msg.WriteString(fmt.Sprintf("📜 *Riwayat Pembayaran Hutang: %s*\n\n", personName))
+
+	for i, p := range payments {
+		noteStr := "-"
+		if strings.TrimSpace(p.Note) != "" {
+			noteStr = p.Note
+		}
+		
+		msg.WriteString(fmt.Sprintf("*%d. %s*\n", i+1, p.PaidAt.In(s.loc).Format("02 Jan 2006 15:04")))
+		msg.WriteString(fmt.Sprintf("• *Jumlah:* %s\n", formatIDRCurrency(p.Amount)))
+		msg.WriteString(fmt.Sprintf("• *Catatan:* %s\n\n", noteStr))
+	}
+
+	return msg.String(), nil
 }

@@ -214,6 +214,8 @@ func (h *BotHandler) handleDebtCommand(telegramID int64, args string) string {
 			"• `/debt add payable <nama> <jumlah> <deskripsi>`\n  _Catat hutang lu ke orang lain_\n  _Contoh: `/debt add payable Budi 200rb beli pulsa`_\n\n" +
 			"• `/debt list` — Lihat semua hutang & piutang aktif\n" +
 			"• `/debt summary` — Lihat ringkasan posisi keuangan hutang lu\n" +
+			"• `/debt detail <nama>` — Cek detail hutang per orang\n" +
+			"• `/debt history <nama>` — Cek riwayat pembayaran hutang per orang\n" +
 			"• `/debt pay <nama> <jumlah>` — Bayar sebagian hutang\n" +
 			"• `/debt paid <nama>` — Tandai hutang ke nama itu sudah lunas\n" +
 			"• `/debt cancel <nama>` — Batalkan hutang ke nama itu"
@@ -232,6 +234,28 @@ func (h *BotHandler) handleDebtCommand(telegramID int64, args string) string {
 	case "summary":
 		return h.handleDebtSummary(telegramID)
 
+	case "detail":
+		if len(parts) < 2 {
+			return "⚠️ Format salah. Gunakan: `/debt detail <nama>`\n_Contoh: `/debt detail Andi`_"
+		}
+		personName := strings.Join(parts[1:], " ")
+		reply, err := h.finance.GetDebtDetail(telegramID, personName)
+		if err != nil {
+			return fmt.Sprintf("⚠️ *Gagal mengambil detail hutang:*\n%v", err)
+		}
+		return reply
+
+	case "history":
+		if len(parts) < 2 {
+			return "⚠️ Format salah. Gunakan: `/debt history <nama>`\n_Contoh: `/debt history Budi`_"
+		}
+		personName := strings.Join(parts[1:], " ")
+		reply, err := h.finance.GetDebtHistory(telegramID, personName)
+		if err != nil {
+			return fmt.Sprintf("⚠️ *Gagal mengambil riwayat pembayaran hutang:*\n%v", err)
+		}
+		return reply
+
 	case "pay":
 		return h.handleDebtPay(telegramID, parts[1:])
 
@@ -243,7 +267,7 @@ func (h *BotHandler) handleDebtCommand(telegramID int64, args string) string {
 
 	default:
 		return "⚠️ Sub-perintah tidak dikenal.\n\n" +
-			"Coba `/debt add receivable Andi 500rb makan`, `/debt list`, atau `/debt summary` ya bro!"
+			"Coba `/debt detail Andi`, `/debt history Budi`, `/debt list`, atau `/debt summary` ya bro!"
 	}
 }
 
