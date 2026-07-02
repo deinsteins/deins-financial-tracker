@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"fmt"
+
 	"finance-bot/bot/llm"
 )
 
@@ -60,6 +62,17 @@ func (s *orchestrationService) registerTools(finance FinanceService) {
 	s.registry.Register(&llm.SetCategoryBudgetTool{
 		Handler: func(ctx context.Context, telegramID int64, args *llm.SetCategoryBudgetArgs) (interface{}, error) {
 			return finance.SetCategoryBudget(telegramID, args.Category, args.Amount)
+		},
+	})
+	s.registry.Register(&llm.DeleteTransactionTool{
+		Handler: func(ctx context.Context, telegramID int64, args *llm.DeleteTransactionArgs) (interface{}, error) {
+			if args.Last {
+				return finance.DeleteLastTransaction(telegramID)
+			}
+			if args.ID != "" {
+				return finance.DeleteTransaction(telegramID, args.ID)
+			}
+			return nil, fmt.Errorf("must specify either 'last' or 'id'")
 		},
 	})
 }

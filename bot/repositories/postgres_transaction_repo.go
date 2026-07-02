@@ -111,3 +111,26 @@ func (r *postgresTransactionRepository) GetNetSavings(userID string) (int64, err
 	}
 	return netSavings, nil
 }
+
+func (r *postgresTransactionRepository) GetByID(id string) (*models.Transaction, error) {
+	query := `SELECT id, user_id, type, category, amount, description, wallet_id, transaction_date, created_at 
+	          FROM transactions 
+	          WHERE id = $1`
+	txs, err := r.queryTransactions(query, id)
+	if err != nil {
+		return nil, fmt.Errorf("postgres_transaction_repo: failed to get transaction by id: %w", err)
+	}
+	if len(txs) == 0 {
+		return nil, nil
+	}
+	return txs[0], nil
+}
+
+func (r *postgresTransactionRepository) Delete(id string) error {
+	query := `DELETE FROM transactions WHERE id = $1`
+	_, err := r.pool.Exec(context.Background(), query, id)
+	if err != nil {
+		return fmt.Errorf("postgres_transaction_repo: failed to delete transaction: %w", err)
+	}
+	return nil
+}

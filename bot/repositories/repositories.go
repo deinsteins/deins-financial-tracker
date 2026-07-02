@@ -14,10 +14,12 @@ type UserRepository interface {
 
 type TransactionRepository interface {
 	Create(tx *models.Transaction) error
+	GetByID(id string) (*models.Transaction, error)
 	GetByUserID(userID string) ([]*models.Transaction, error)
 	GetToday(userID string, tz string) ([]*models.Transaction, error)
 	GetMonth(userID string, tz string) ([]*models.Transaction, error)
 	GetNetSavings(userID string) (int64, error)
+	Delete(id string) error
 }
 
 type ReportRepository interface {

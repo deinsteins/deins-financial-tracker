@@ -372,3 +372,58 @@ func (t *SetCategoryBudgetTool) Execute(ctx context.Context, telegramID int64, a
 	}
 	return t.Handler(ctx, telegramID, parsed.(*SetCategoryBudgetArgs))
 }
+
+// ==========================================
+// 8. delete_transaction
+// ==========================================
+
+type DeleteTransactionArgs struct {
+	ID   string `json:"id,omitempty"`
+	Last bool   `json:"last,omitempty"`
+}
+
+type DeleteTransactionTool struct {
+	Handler func(ctx context.Context, telegramID int64, args *DeleteTransactionArgs) (interface{}, error)
+}
+
+func (t *DeleteTransactionTool) Name() string { return "delete_transaction" }
+func (t *DeleteTransactionTool) Description() string {
+	return "Delete, undo, or cancel a transaction. Can target the last transaction (set last=true) or a specific transaction ID."
+}
+
+func (t *DeleteTransactionTool) Parameters() Parameters {
+	return Parameters{
+		Type: "object",
+		Properties: map[string]Property{
+			"id": {
+				Type:        "string",
+				Description: "The UUID string of the transaction to delete.",
+			},
+			"last": {
+				Type:        "boolean",
+				Description: "Set to true to delete the user's latest transaction.",
+			},
+		},
+	}
+}
+
+func (t *DeleteTransactionTool) Validate(argsRaw string) (interface{}, error) {
+	var args DeleteTransactionArgs
+	if argsRaw != "" && argsRaw != "{}" {
+		if err := json.Unmarshal([]byte(argsRaw), &args); err != nil {
+			return nil, fmt.Errorf("invalid JSON payload: %w", err)
+		}
+	}
+	return &args, nil
+}
+
+func (t *DeleteTransactionTool) Execute(ctx context.Context, telegramID int64, argsRaw string) (interface{}, error) {
+	parsed, err := t.Validate(argsRaw)
+	if err != nil {
+		return nil, err
+	}
+	if t.Handler == nil {
+		return nil, errors.New("execute handler not configured")
+	}
+	return t.Handler(ctx, telegramID, parsed.(*DeleteTransactionArgs))
+}

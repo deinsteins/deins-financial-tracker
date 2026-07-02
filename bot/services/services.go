@@ -41,6 +41,8 @@ type FinanceService interface {
 	CancelDebt(telegramID int64, debtID string) error
 	GetDebtSummary(telegramID int64) (string, error)
 	ParseDebtText(text string) (*DebtParseResponse, error)
+	DeleteTransaction(telegramID int64, txID string) (*models.Transaction, error)
+	DeleteLastTransaction(telegramID int64) (*models.Transaction, error)
 }
 
 type financeService struct {
@@ -946,4 +948,63 @@ func (s *financeService) GetSubscriptions(telegramID int64) (string, error) {
 
 func (s *financeService) OCRReceipt(fileData []byte, filename string) (*OCRReceiptResponse, error) {
 	return s.ai.OCRReceipt(fileData, filename)
+}
+
+func (s *financeService) DeleteTransaction(telegramID int64, txID string) (*models.Transaction, error) {
+	user, err := s.getOrCreateUser(telegramID, "Telegram User")
+	if err != nil {
+		return nil, err
+	}
+
+	tx, err := s.txRepo.GetByID(txID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch transaction: %w", err)
+	}
+	if tx == nil {
+		return nil, fmt.Errorf("transaction not found")
+	}
+	if tx.UserID != user.ID {
+		return nil, fmt.Errorf("transaction does not belong to user")
+	}
+
+	// Revert wallet balance if wallet_id is set
+	if tx.WalletID != nil && *tx.WalletID != "" {
+		balanceOffset := tx.Amount
+		if tx.Type == "expense" {
+			balanceOffset = tx.Amount
+		} else if tx.Type == "income" {
+			balanceOffset = -tx.Amount
+		}
+		err = s.walletRepo.UpdateBalance(*tx.WalletID, balanceOffset)
+		if err != nil {
+			log.Printf("ERROR: failed to revert wallet balance on deletion: %v", err)
+		}
+	}
+
+	// Delete from repo
+	err = s.txRepo.Delete(txID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to delete transaction: %w", err)
+	}
+
+	return tx, nil
+}
+
+func (s *financeService) DeleteLastTransaction(telegramID int64) (*models.Transaction, error) {
+	user, err := s.getOrCreateUser(telegramID, "Telegram User")
+	if err != nil {
+		return nil, err
+	}
+
+	txs, err := s.txRepo.GetByUserID(user.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch transactions: %w", err)
+	}
+	if len(txs) == 0 {
+		return nil, fmt.Errorf("no transactions found to delete")
+	}
+
+	latestTx := txs[0]
+
+	return s.DeleteTransaction(telegramID, latestTx.ID)
 }

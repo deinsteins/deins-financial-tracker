@@ -199,3 +199,27 @@ func TestSetCategoryBudgetTool_Validation(t *testing.T) {
 		t.Error("expected error for negative category amount")
 	}
 }
+
+func TestDeleteTransactionTool_Validation(t *testing.T) {
+	tool := &DeleteTransactionTool{}
+
+	// Valid payload with id
+	parsed, err := tool.Validate(`{"id":"d3b07384-d113-4ec6-a558-71311b587cf5"}`)
+	if err != nil {
+		t.Fatalf("expected no validation error, got: %v", err)
+	}
+	args := parsed.(*DeleteTransactionArgs)
+	if args.ID != "d3b07384-d113-4ec6-a558-71311b587cf5" || args.Last {
+		t.Errorf("parsed args mismatch: %+v", args)
+	}
+
+	// Valid payload with last=true
+	parsed, err = tool.Validate(`{"last":true}`)
+	if err != nil {
+		t.Fatalf("expected no validation error, got: %v", err)
+	}
+	args = parsed.(*DeleteTransactionArgs)
+	if args.ID != "" || !args.Last {
+		t.Errorf("parsed args mismatch: %+v", args)
+	}
+}

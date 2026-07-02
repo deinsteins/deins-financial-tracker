@@ -145,6 +145,7 @@ func (h *BotHandler) handleCommand(msg *tgbotapi.Message) {
 			"/start - Mulai ulang bot & sapa gua\n"+
 			"/today - Cek pengeluaran lu hari ini\n"+
 			"/month - Cek rekap bulanan lu\n"+
+			"/delete - Hapus transaksi lu\n"+
 			"/budget set <kategori> <jumlah> - Set budget bulanan kategori tertentu\n"+
 			"/budget status - Cek status budget pengeluaran lu\n"+
 			"/goal add <nama> <jumlah> <deadline> - Set target keuangan baru\n"+
@@ -193,6 +194,10 @@ func (h *BotHandler) handleCommand(msg *tgbotapi.Message) {
 
 	case "debt":
 		replyText = h.handleDebtCommand(msg.From.ID, msg.CommandArguments())
+
+	case "delete":
+		h.handleDeleteCommand(msg.Chat.ID, msg.From.ID, msg.CommandArguments(), msg.MessageID)
+		return
 
 	default:
 		replyText = "Perintah apaan tuh? Coba cek /start aja biar jelas bro!"
@@ -643,6 +648,24 @@ func (h *BotHandler) handleTextMessage(msg *tgbotapi.Message) {
 					replyText += "✅ *Budget kategori berhasil diubah.*\n\n"
 				}
 
+			case "delete_transaction":
+				tx, ok := res.(*models.Transaction)
+				if !ok {
+					replyText += "✅ *Transaksi Berhasil Dihapus!*\n\n"
+					continue
+				}
+				typeEmoji := "💸 pengeluaran"
+				if tx.Type == "income" {
+					typeEmoji = "💰 pemasukan"
+				}
+				replyText += fmt.Sprintf("✅ *Transaksi Berhasil Dihapus!* 🎉\n\n"+
+					"• *Tipe*: %s\n"+
+					"• *Kategori*: %s\n"+
+					"• *Jumlah*: %s\n"+
+					"• *Deskripsi*: %s\n\n"+
+					"💾 _Saldo dompet dan budget sudah diupdate secara otomatis._\n\n",
+					typeEmoji, tx.Category, formatIDRCurrency(tx.Amount), tx.Description)
+
 			default:
 				replyText += fmt.Sprintf("✅ *Eksekusi %s berhasil.*\n\n", tc.ToolName)
 			}
@@ -799,6 +822,39 @@ func (h *BotHandler) handleCallback(cq *tgbotapi.CallbackQuery) {
 	h.bot.Request(tgbotapi.NewCallback(cq.ID, ""))
 
 	chatID := cq.Message.Chat.ID
+
+	if strings.HasPrefix(cq.Data, "tx:delete:") {
+		txID := strings.TrimPrefix(cq.Data, "tx:delete:")
+		tx, err := h.finance.DeleteTransaction(cq.From.ID, txID)
+		if err != nil {
+			log.Printf("Failed to delete transaction: %v", err)
+			edit := tgbotapi.NewEditMessageText(chatID, cq.Message.MessageID,
+				fmt.Sprintf("⚠️ *Gagal menghapus transaksi:*\n%v", err))
+			edit.ParseMode = "markdown"
+			h.bot.Send(edit)
+			return
+		}
+
+		typeEmoji := "💸 pengeluaran"
+		if tx.Type == "income" {
+			typeEmoji = "💰 pemasukan"
+		}
+		successText := fmt.Sprintf("✅ *Transaksi Berhasil Dihapus!* 🎉\n\n"+
+			"• *Tipe*: %s\n"+
+			"• *Kategori*: %s\n"+
+			"• *Jumlah*: %s\n"+
+			"• *Deskripsi*: %s\n\n"+
+			"💾 _Saldo dompet dan budget sudah diupdate secara otomatis._",
+			typeEmoji, tx.Category, formatIDRCurrency(tx.Amount), tx.Description)
+
+		edit := tgbotapi.NewEditMessageText(chatID, cq.Message.MessageID, successText)
+		edit.ParseMode = "markdown"
+		h.bot.Send(edit)
+
+		_ = h.finance.SaveChatHistory(cq.From.ID, "assistant", successText)
+		return
+	}
+
 	pr := getPendingReceipt(chatID)
 	if pr == nil {
 		edit := tgbotapi.NewEditMessageText(chatID, cq.Message.MessageID,
@@ -1106,3 +1162,61 @@ func (h *BotHandler) handleGoalCommand(telegramID int64, args string) string {
 		return "⚠️ Perintah tidak dikenal. Gunakan `/goal add` atau `/goal status`."
 	}
 }
+
+func (h *BotHandler) handleDeleteCommand(chatID int64, telegramID int64, args string, replyToMessageID int) {
+	args = strings.TrimSpace(args)
+	if args != "" {
+		tx, err := h.finance.DeleteTransaction(telegramID, args)
+		if err != nil {
+			h.sendReply(chatID, fmt.Sprintf("⚠️ *Gagal menghapus transaksi:* %v\n_Pastikan UUID transaksi benar ya bro!_", err), replyToMessageID)
+			return
+		}
+
+		typeEmoji := "💸 pengeluaran"
+		if tx.Type == "income" {
+			typeEmoji = "💰 pemasukan"
+		}
+		replyText := fmt.Sprintf("✅ *Transaksi Berhasil Dihapus!* 🎉\n\n"+
+			"• *Tipe*: %s\n"+
+			"• *Kategori*: %s\n"+
+			"• *Jumlah*: %s\n"+
+			"• *Deskripsi*: %s\n\n"+
+			"💾 _Saldo dompet dan budget sudah diupdate secara otomatis._",
+			typeEmoji, tx.Category, formatIDRCurrency(tx.Amount), tx.Description)
+		h.sendReply(chatID, replyText, replyToMessageID)
+		return
+	}
+
+	// Fetch last 5 transactions
+	txs, err := h.finance.GetTransactions(telegramID, 5, "")
+	if err != nil {
+		h.sendReply(chatID, fmt.Sprintf("⚠️ *Gagal mengambil daftar transaksi:* %v", err), replyToMessageID)
+		return
+	}
+	if len(txs) == 0 {
+		h.sendReply(chatID, "📂 *Belum ada catatan transaksi sama sekali nih bro.*", replyToMessageID)
+		return
+	}
+
+	var sb strings.Builder
+	sb.WriteString("🗑️ *Pilih Transaksi yang Ingin Dihapus:*\n\n")
+
+	var rows [][]tgbotapi.InlineKeyboardButton
+	for i, tx := range txs {
+		typeSign := "💸"
+		if tx.Type == "income" {
+			typeSign = "💰"
+		}
+		sb.WriteString(fmt.Sprintf("%d. %s *%s*: %s - %s (_%s_)\n",
+			i+1, typeSign, tx.Category, formatIDRCurrency(tx.Amount), tx.Description, tx.TransactionDate.Format("02 Jan 15:04")))
+
+		buttonText := fmt.Sprintf("Hapus %d ❌", i+1)
+		callbackData := fmt.Sprintf("tx:delete:%s", tx.ID)
+		row := tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData(buttonText, callbackData))
+		rows = append(rows, row)
+	}
+
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	h.sendReplyWithKeyboard(chatID, sb.String(), replyToMessageID, keyboard)
+}
+
