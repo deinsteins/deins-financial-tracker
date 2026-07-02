@@ -16,6 +16,7 @@ type fakeUserRepo struct {
 func (f *fakeUserRepo) Create(user *models.User) error                         { return nil }
 func (f *fakeUserRepo) GetByTelegramID(telegramID int64) (*models.User, error) { return f.user, nil }
 func (f *fakeUserRepo) UpdateBudget(userID string, budget int64) error         { return nil }
+func (f *fakeUserRepo) UpdateCycleStartDay(userID string, startDay int) error  { return nil }
 
 type fakeDebtRepo struct {
 	activeDebts                   []*models.Debt

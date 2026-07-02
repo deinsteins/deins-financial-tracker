@@ -3,6 +3,7 @@ package repositories
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -58,12 +59,12 @@ func (r *postgresTransactionRepository) GetToday(userID string, tz string) ([]*m
 	return r.queryTransactions(query, userID, tz)
 }
 
-func (r *postgresTransactionRepository) GetMonth(userID string, tz string) ([]*models.Transaction, error) {
+func (r *postgresTransactionRepository) GetMonth(userID string, startTime time.Time, endTime time.Time) ([]*models.Transaction, error) {
 	query := `SELECT id, user_id, type, category, amount, description, wallet_id, transaction_date, created_at 
 	          FROM transactions 
-	          WHERE user_id = $1 AND date_trunc('month', transaction_date AT TIME ZONE $2) = date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE $2) 
+	          WHERE user_id = $1 AND transaction_date >= $2 AND transaction_date <= $3 
 	          ORDER BY transaction_date DESC`
-	return r.queryTransactions(query, userID, tz)
+	return r.queryTransactions(query, userID, startTime, endTime)
 }
 
 func (r *postgresTransactionRepository) queryTransactions(query string, args ...interface{}) ([]*models.Transaction, error) {

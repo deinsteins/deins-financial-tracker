@@ -43,6 +43,7 @@ type FinanceService interface {
 	ParseDebtText(text string) (*DebtParseResponse, error)
 	DeleteTransaction(telegramID int64, txID string) (*models.Transaction, error)
 	DeleteLastTransaction(telegramID int64) (*models.Transaction, error)
+	SetBudgetCycleStartDay(telegramID int64, startDay int) (string, error)
 }
 
 type financeService struct {
@@ -195,12 +196,15 @@ func (s *financeService) GetMonthSummary(telegramID int64) (string, error) {
 		return "", err
 	}
 
-	txs, err := s.txRepo.GetMonth(user.ID, s.loc.String())
+	now := time.Now().In(s.loc)
+	startTime, endTime := getBudgetCycleRange(now, user.BudgetCycleStartDay)
+
+	txs, err := s.txRepo.GetMonth(user.ID, startTime, endTime)
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch monthly transactions: %w", err)
 	}
 
-	title := fmt.Sprintf("🗓️ *Rekap Keuangan Bulan Ini* (%s)", time.Now().In(s.loc).Format("Jan 2006"))
+	title := fmt.Sprintf("🗓️ *Rekap Keuangan Bulan Ini* (%s s/d %s)", startTime.Format("02 Jan"), endTime.Format("02 Jan 2006"))
 	return s.buildFinanceSummary(title, txs), nil
 }
 
@@ -359,13 +363,16 @@ func (s *financeService) GenerateAIAnalysis(telegramID int64) (string, error) {
 		return "", err
 	}
 
-	txs, err := s.txRepo.GetMonth(user.ID, s.loc.String())
+	now := time.Now().In(s.loc)
+	startTime, endTime := getBudgetCycleRange(now, user.BudgetCycleStartDay)
+
+	txs, err := s.txRepo.GetMonth(user.ID, startTime, endTime)
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch transactions for analysis: %w", err)
 	}
 
 	if len(txs) == 0 {
-		return "🗓️ *Bulan ini lu belum nyatet transaksi sama sekali nih bro.* Yuk catat dulu transaksi lu, contoh: 'beli kopi 25rb'!", nil
+		return "🗓️ *Siklus budget ini lu belum nyatet transaksi sama sekali nih bro.* Yuk catat dulu transaksi lu, contoh: 'beli kopi 25rb'!", nil
 	}
 
 	log.Printf("[FinanceService] Requesting AI analysis for user %s with %d transactions", user.ID, len(txs))
@@ -493,7 +500,10 @@ func (s *financeService) GetBudgetStatus(telegramID int64) (string, error) {
 	}
 
 	// 2. Fetch all transactions this month to calculate spending
-	txs, err := s.txRepo.GetMonth(user.ID, s.loc.String())
+	now := time.Now().In(s.loc)
+	startTime, endTime := getBudgetCycleRange(now, user.BudgetCycleStartDay)
+
+	txs, err := s.txRepo.GetMonth(user.ID, startTime, endTime)
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch monthly transactions: %w", err)
 	}
@@ -565,7 +575,10 @@ func (s *financeService) CheckBudgetAlerts(telegramID int64, category string) (s
 	}
 
 	// Fetch all transactions this month to calculate spending
-	txs, err := s.txRepo.GetMonth(user.ID, s.loc.String())
+	now := time.Now().In(s.loc)
+	startTime, endTime := getBudgetCycleRange(now, user.BudgetCycleStartDay)
+
+	txs, err := s.txRepo.GetMonth(user.ID, startTime, endTime)
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch monthly transactions for budget checking: %w", err)
 	}
@@ -1007,4 +1020,69 @@ func (s *financeService) DeleteLastTransaction(telegramID int64) (*models.Transa
 	latestTx := txs[0]
 
 	return s.DeleteTransaction(telegramID, latestTx.ID)
+}
+
+func (s *financeService) SetBudgetCycleStartDay(telegramID int64, startDay int) (string, error) {
+	user, err := s.getOrCreateUser(telegramID, "Telegram User")
+	if err != nil {
+		return "", err
+	}
+
+	err = s.userRepo.UpdateCycleStartDay(user.ID, startDay)
+	if err != nil {
+		return "", fmt.Errorf("gagal update tanggal gajian: %w", err)
+	}
+
+	var endDay int
+	if startDay == 1 {
+		return "✅ *Siklus Budget Diupdate!* 📅\n\nSiklus keuangan bulanan lu sekarang dihitung berdasarkan kalender bulanan (tanggal 1 s/d akhir bulan) secara otomatis.", nil
+	} else {
+		endDay = startDay - 1
+	}
+
+	return fmt.Sprintf("✅ *Tanggal Gajian / Siklus Budget Diupdate!* 📅\n\nSiklus keuangan bulanan lu sekarang dimulai setiap tanggal *%d* sampai tanggal *%d* bulan berikutnya secara otomatis.", startDay, endDay), nil
+}
+
+func getBudgetCycleRange(now time.Time, cycleStartDay int) (time.Time, time.Time) {
+	if cycleStartDay < 1 {
+		cycleStartDay = 1
+	}
+	if cycleStartDay > 31 {
+		cycleStartDay = 31
+	}
+
+	var startYear, endYear int
+	var startMonth, endMonth time.Month
+
+	if now.Day() >= cycleStartDay {
+		startYear = now.Year()
+		startMonth = now.Month()
+
+		nextMonth := now.AddDate(0, 1, 0)
+		endYear = nextMonth.Year()
+		endMonth = nextMonth.Month()
+	} else {
+		prevMonth := now.AddDate(0, -1, 0)
+		startYear = prevMonth.Year()
+		startMonth = prevMonth.Month()
+
+		endYear = now.Year()
+		endMonth = now.Month()
+	}
+
+	resolveDay := func(year int, month time.Month, targetDay int) int {
+		lastDay := time.Date(year, month+1, 0, 0, 0, 0, 0, time.UTC).Day()
+		if targetDay > lastDay {
+			return lastDay
+		}
+		return targetDay
+	}
+
+	sDay := resolveDay(startYear, startMonth, cycleStartDay)
+	eDay := resolveDay(endYear, endMonth, cycleStartDay)
+
+	startTime := time.Date(startYear, startMonth, sDay, 0, 0, 0, 0, now.Location())
+	endTime := time.Date(endYear, endMonth, eDay, 0, 0, 0, 0, now.Location()).Add(-time.Nanosecond)
+
+	return startTime, endTime
 }

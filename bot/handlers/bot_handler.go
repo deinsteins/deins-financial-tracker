@@ -1039,8 +1039,9 @@ func (h *BotHandler) handleBudgetCommand(telegramID int64, args string) string {
 	if args == "" {
 		return "📋 *Panduan Perintah /budget*:\n\n" +
 			"• `/budget set <kategori> <jumlah>` - Set budget untuk kategori tertentu\n" +
-			"  _Contoh: `/budget set food 500rb`_\n" +
-			"  _Contoh: `/budget set transport 200k`_\n\n" +
+			"  _Contoh: `/budget set food 500rb`_\n\n" +
+			"• `/budget cycle <tanggal>` - Set tanggal gajian / mulai siklus budget bulanan (1-31)\n" +
+			"  _Contoh: `/budget cycle 25`_\n\n" +
 			"• `/budget status` - Cek status budget & pengeluaran lu saat ini"
 	}
 
@@ -1062,6 +1063,22 @@ func (h *BotHandler) handleBudgetCommand(telegramID int64, args string) string {
 		reply, err := h.finance.SetCategoryBudget(telegramID, category, amount)
 		if err != nil {
 			return fmt.Sprintf("⚠️ Gagal menyetel budget: %v", err)
+		}
+		return reply
+
+	case "cycle":
+		if len(parts) < 2 {
+			return "⚠️ Format salah. Gunakan: `/budget cycle <tanggal>`\n_Contoh: `/budget cycle 25`_"
+		}
+		dayStr := parts[1]
+		day, err := strconv.Atoi(dayStr)
+		if err != nil || day < 1 || day > 31 {
+			return "⚠️ Tanggal siklus budget tidak valid. Harus berupa angka antara 1 sampai 31."
+		}
+
+		reply, err := h.finance.SetBudgetCycleStartDay(telegramID, day)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Gagal menyetel siklus budget: %v", err)
 		}
 		return reply
 

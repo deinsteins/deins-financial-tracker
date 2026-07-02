@@ -10,6 +10,7 @@ type UserRepository interface {
 	Create(user *models.User) error
 	GetByTelegramID(telegramID int64) (*models.User, error)
 	UpdateBudget(userID string, budget int64) error
+	UpdateCycleStartDay(userID string, startDay int) error
 }
 
 type TransactionRepository interface {
@@ -17,7 +18,7 @@ type TransactionRepository interface {
 	GetByID(id string) (*models.Transaction, error)
 	GetByUserID(userID string) ([]*models.Transaction, error)
 	GetToday(userID string, tz string) ([]*models.Transaction, error)
-	GetMonth(userID string, tz string) ([]*models.Transaction, error)
+	GetMonth(userID string, startTime time.Time, endTime time.Time) ([]*models.Transaction, error)
 	GetNetSavings(userID string) (int64, error)
 	Delete(id string) error
 }

@@ -5,11 +5,12 @@ import (
 )
 
 type User struct {
-	ID            string    `json:"id"`
-	TelegramID    int64     `json:"telegram_id"`
-	FullName      string    `json:"full_name"`
-	MonthlyBudget int64     `json:"monthly_budget"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID                  string    `json:"id"`
+	TelegramID          int64     `json:"telegram_id"`
+	FullName            string    `json:"full_name"`
+	MonthlyBudget       int64     `json:"monthly_budget"`
+	BudgetCycleStartDay int       `json:"budget_cycle_start_day"`
+	CreatedAt           time.Time `json:"created_at"`
 }
 
 type Transaction struct {

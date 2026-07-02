@@ -16,6 +16,15 @@ type postgresUserRepository struct {
 }
 
 func NewPostgresUserRepository(pool *pgxpool.Pool) UserRepository {
+	// Alter users table to add budget_cycle_start_day if not exists
+	alterDDL := `
+	ALTER TABLE users 
+	ADD COLUMN IF NOT EXISTS budget_cycle_start_day INT DEFAULT 1 CHECK (budget_cycle_start_day >= 1 AND budget_cycle_start_day <= 31);`
+	_, err := pool.Exec(context.Background(), alterDDL)
+	if err != nil {
+		fmt.Printf("ERROR: failed to alter users table for budget_cycle_start_day: %v\n", err)
+	}
+
 	return &postgresUserRepository{pool: pool}
 }
 
@@ -23,16 +32,20 @@ func (r *postgresUserRepository) Create(user *models.User) error {
 	var query string
 	var err error
 
+	if user.BudgetCycleStartDay == 0 {
+		user.BudgetCycleStartDay = 1
+	}
+
 	if user.ID == "" {
-		query = `INSERT INTO users (telegram_id, full_name, monthly_budget) 
-		         VALUES ($1, $2, $3) 
-		         RETURNING id, created_at`
-		err = r.pool.QueryRow(context.Background(), query, user.TelegramID, user.FullName, user.MonthlyBudget).Scan(&user.ID, &user.CreatedAt)
-	} else {
-		query = `INSERT INTO users (id, telegram_id, full_name, monthly_budget) 
+		query = `INSERT INTO users (telegram_id, full_name, monthly_budget, budget_cycle_start_day) 
 		         VALUES ($1, $2, $3, $4) 
+		         RETURNING id, created_at`
+		err = r.pool.QueryRow(context.Background(), query, user.TelegramID, user.FullName, user.MonthlyBudget, user.BudgetCycleStartDay).Scan(&user.ID, &user.CreatedAt)
+	} else {
+		query = `INSERT INTO users (id, telegram_id, full_name, monthly_budget, budget_cycle_start_day) 
+		         VALUES ($1, $2, $3, $4, $5) 
 		         RETURNING created_at`
-		err = r.pool.QueryRow(context.Background(), query, user.ID, user.TelegramID, user.FullName, user.MonthlyBudget).Scan(&user.CreatedAt)
+		err = r.pool.QueryRow(context.Background(), query, user.ID, user.TelegramID, user.FullName, user.MonthlyBudget, user.BudgetCycleStartDay).Scan(&user.CreatedAt)
 	}
 
 	if err != nil {
@@ -42,7 +55,7 @@ func (r *postgresUserRepository) Create(user *models.User) error {
 }
 
 func (r *postgresUserRepository) GetByTelegramID(telegramID int64) (*models.User, error) {
-	query := `SELECT id, telegram_id, full_name, monthly_budget, created_at 
+	query := `SELECT id, telegram_id, full_name, monthly_budget, budget_cycle_start_day, created_at 
 	          FROM users 
 	          WHERE telegram_id = $1`
 
@@ -52,6 +65,7 @@ func (r *postgresUserRepository) GetByTelegramID(telegramID int64) (*models.User
 		&user.TelegramID,
 		&user.FullName,
 		&user.MonthlyBudget,
+		&user.BudgetCycleStartDay,
 		&user.CreatedAt,
 	)
 
@@ -70,6 +84,15 @@ func (r *postgresUserRepository) UpdateBudget(userID string, budget int64) error
 	_, err := r.pool.Exec(context.Background(), query, budget, userID)
 	if err != nil {
 		return fmt.Errorf("postgres_user_repo: failed to update monthly budget: %w", err)
+	}
+	return nil
+}
+
+func (r *postgresUserRepository) UpdateCycleStartDay(userID string, startDay int) error {
+	query := `UPDATE users SET budget_cycle_start_day = $1 WHERE id = $2`
+	_, err := r.pool.Exec(context.Background(), query, startDay, userID)
+	if err != nil {
+		return fmt.Errorf("postgres_user_repo: failed to update budget cycle start day: %w", err)
 	}
 	return nil
 }
