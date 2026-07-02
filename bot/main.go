@@ -144,6 +144,11 @@ func main() {
 			debtReminderScheduler := scheduler.NewDebtReminderScheduler(bot, debtRepo, debtReminderRepo)
 			debtReminderScheduler.Start()
 			log.Println("Started debt due-date reminder scheduler successfully.")
+
+			// Start the monthly net worth snapshot scheduler (runs on the 1st of every month at 08:00 server time)
+			netWorthScheduler := scheduler.NewNetWorthScheduler(bot, userRepo, netWorthRepo, debtRepo)
+			netWorthScheduler.Start()
+			log.Println("Started monthly net worth snapshot scheduler successfully.")
 		}
 	}
 

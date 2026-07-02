@@ -17,6 +17,12 @@ func (f *fakeUserRepo) Create(user *models.User) error                         {
 func (f *fakeUserRepo) GetByTelegramID(telegramID int64) (*models.User, error) { return f.user, nil }
 func (f *fakeUserRepo) UpdateBudget(userID string, budget int64) error         { return nil }
 func (f *fakeUserRepo) UpdateCycleStartDay(userID string, startDay int) error  { return nil }
+func (f *fakeUserRepo) GetAllUsers() ([]*models.User, error) {
+	if f.user != nil {
+		return []*models.User{f.user}, nil
+	}
+	return nil, nil
+}
 
 type fakeDebtRepo struct {
 	activeDebts                   []*models.Debt

@@ -96,3 +96,31 @@ func (r *postgresUserRepository) UpdateCycleStartDay(userID string, startDay int
 	}
 	return nil
 }
+
+func (r *postgresUserRepository) GetAllUsers() ([]*models.User, error) {
+	query := `SELECT id, telegram_id, full_name, monthly_budget, budget_cycle_start_day, created_at 
+	          FROM users`
+	rows, err := r.pool.Query(context.Background(), query)
+	if err != nil {
+		return nil, fmt.Errorf("postgres_user_repo: failed to query all users: %w", err)
+	}
+	defer rows.Close()
+
+	var users []*models.User
+	for rows.Next() {
+		var user models.User
+		err := rows.Scan(
+			&user.ID,
+			&user.TelegramID,
+			&user.FullName,
+			&user.MonthlyBudget,
+			&user.BudgetCycleStartDay,
+			&user.CreatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("postgres_user_repo: failed to scan user row: %w", err)
+		}
+		users = append(users, &user)
+	}
+	return users, nil
+}

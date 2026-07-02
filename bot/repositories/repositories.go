@@ -11,6 +11,7 @@ type UserRepository interface {
 	GetByTelegramID(telegramID int64) (*models.User, error)
 	UpdateBudget(userID string, budget int64) error
 	UpdateCycleStartDay(userID string, startDay int) error
+	GetAllUsers() ([]*models.User, error)
 }
 
 type TransactionRepository interface {
