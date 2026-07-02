@@ -138,6 +138,10 @@ class AnalyzeResponse(BaseModel):
     saving_recommendations: list[str] = Field(..., description="Actionable saving recommendations in casual Indonesian")
     financial_score: int = Field(..., description="Financial score from 0 to 100 based on their savings rate, budgeting, and spending habits")
 
+class CashflowInsightResponse(BaseModel):
+    summary: str = Field(..., description="Concise cashflow explanation in Indonesian")
+    recommendations: list[str] = Field(..., description="List of 3 practical recommendations in Indonesian based on the data")
+
 def normalize_indonesian_currency(text: str, support_k: bool = False) -> str:
     """
     Normalizes Indonesian slang currency formats:
@@ -1198,3 +1202,117 @@ Return ONLY the JSON object. Do not wrap in markdown tags.
             logger.error(f"Gemini API analyze failed: {e}. Falling back to rule-based analyzer.")
             analysis_data = fallback_analyze(transactions)
             return AnalyzeResponse(**analysis_data)
+
+    def analyze_cashflow(self,
+        available_balance: int,
+        daily_burn_rate: int,
+        projected_expense: int,
+        upcoming_obligations: int,
+        projected_balance: int,
+        risk_level: str,
+        target_date: str,
+        top_categories: list[str],
+    ) -> CashflowInsightResponse:
+        """
+        Uses Gemini to generate concise cashflow insights in Indonesian based on
+        the prediction data computed by the Go cashflow prediction service.
+        """
+        logger.info(f"Analyzing cashflow: risk_level={risk_level}, projected_balance={projected_balance}")
+
+        def fmt_rp(v: int) -> str:
+            return f"Rp {v:,.0f}".replace(",", ".")
+
+        # Build a simple fallback for when Gemini is not configured
+        def fallback() -> CashflowInsightResponse:
+            recs = []
+            if projected_balance <= 0:
+                recs.append("Saldo proyeksi negatif — pertimbangkan untuk mengurangi pengeluaran tidak penting sekarang.")
+                recs.append("Tunda pengeluaran besar hingga setelah tanggal gajian berikutnya.")
+                recs.append("Cek apakah ada tagihan atau cicilan yang bisa dijadwalkan ulang.")
+            elif risk_level == "risky":
+                recs.append("Kurangi pengeluaran harian agar saldo akhir lebih aman.")
+                recs.append("Prioritaskan pembayaran kewajiban sebelum pengeluaran opsional.")
+                recs.append("Coba sisihkan dana darurat minimal 10% dari saldo saat ini.")
+            else:
+                recs.append("Pertahankan pola pengeluaran saat ini — kamu sudah di jalur yang baik.")
+                recs.append("Manfaatkan sisa saldo untuk menambah tabungan atau investasi.")
+                recs.append("Pantau pengeluaran mingguan agar tren positif ini terjaga.")
+
+            pct = round((projected_balance / available_balance) * 100) if available_balance > 0 else 0
+            warning = f" ⚠️ Proyeksi saldo hanya {pct}% dari saldo awal — kondisi keuangan kritis." if projected_balance <= 0 else ""
+            summary = (
+                f"Dengan saldo tersedia {fmt_rp(available_balance)}, rata-rata pengeluaran harian {fmt_rp(daily_burn_rate)}, "
+                f"dan kewajiban mendatang {fmt_rp(upcoming_obligations)}, "
+                f"proyeksi saldo kamu hingga {target_date} adalah {fmt_rp(projected_balance)} "
+                f"(risiko: {risk_level}).{warning}"
+            )
+            return CashflowInsightResponse(summary=summary, recommendations=recs)
+
+        if not self.is_configured:
+            logger.info("Gemini not configured, using fallback cashflow insight.")
+            return fallback()
+
+        categories_str = ", ".join(top_categories) if top_categories else "tidak ada data kategori"
+        pct_remaining = round((projected_balance / available_balance) * 100) if available_balance > 0 else 0
+
+        prompt = f"""
+Kamu adalah asisten keuangan pribadi yang memberikan analisis cashflow ringkas dalam Bahasa Indonesia.
+
+Data cashflow pengguna:
+- Saldo tersedia: {fmt_rp(available_balance)}
+- Rata-rata pengeluaran harian: {fmt_rp(daily_burn_rate)}
+- Proyeksi pengeluaran hingga {target_date}: {fmt_rp(projected_expense)}
+- Kewajiban mendatang (tagihan, cicilan, hutang): {fmt_rp(upcoming_obligations)}
+- Proyeksi saldo akhir: {fmt_rp(projected_balance)} ({pct_remaining}% dari saldo awal)
+- Tingkat risiko: {risk_level}
+- Kategori pengeluaran terbesar: {categories_str}
+
+Tugas kamu:
+1. Buat ringkasan situasi cashflow dalam 2-3 kalimat. Jelaskan kondisi keuangan saat ini berdasarkan data di atas. Jika proyeksi saldo sangat rendah atau negatif, sertakan peringatan singkat.
+2. Berikan tepat 3 rekomendasi praktis yang spesifik terhadap data di atas. Hindari saran keuangan generik seperti "hemat lebih banyak" tanpa konteks. Contoh: jika kewajiban besar, sarankan cara menangguhkan cicilan; jika burn rate tinggi, identifikasi kategori mana yang bisa dipotong.
+
+Aturan:
+- Gunakan Bahasa Indonesia informal tapi tetap profesional (bukan bahasa gaul).
+- Jangan memberikan saran umum yang tidak berkaitan dengan data di atas.
+- Tetap singkat dan padat. Ringkasan maksimal 3 kalimat. Setiap rekomendasi maksimal 2 kalimat.
+- Jangan ulangi angka yang sudah disebutkan di ringkasan dalam rekomendasi.
+- Return ONLY a raw JSON object. Jangan gunakan markdown.
+
+Format output:
+{{"summary": "...", "recommendations": ["...", "...", "..."]}}
+"""
+
+        try:
+            if self.is_custom_llm_configured:
+                system_prompt = "Kamu adalah asisten keuangan pribadi."
+                raw_json = self._call_custom_llm(prompt, system_prompt).strip()
+                if raw_json.startswith("```"):
+                    lines = raw_json.split("\n")
+                    if lines[0].startswith("```"):
+                        lines = lines[1:]
+                    if lines[-1].startswith("```"):
+                        lines = lines[:-1]
+                    raw_json = "\n".join(lines).strip()
+                logger.info(f"Custom LLM cashflow insight response: {raw_json}")
+                data = json.loads(raw_json)
+                return CashflowInsightResponse(**data)
+        except Exception as e:
+            logger.error(f"Custom LLM cashflow insight failed: {e}. Using fallback.")
+            return fallback()
+
+        try:
+            model = genai.GenerativeModel(self.model_name)
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    response_mime_type="application/json",
+                    response_schema=clean_gemini_schema(CashflowInsightResponse),
+                )
+            )
+            raw_json = response.text.strip()
+            logger.info(f"Gemini cashflow insight response: {raw_json}")
+            data = json.loads(raw_json)
+            return CashflowInsightResponse(**data)
+        except Exception as e:
+            logger.error(f"Gemini API cashflow insight failed: {e}. Using fallback.")
+            return fallback()

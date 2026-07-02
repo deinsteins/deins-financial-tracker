@@ -15,6 +15,7 @@ from parser_service import (
     ReceiptItem,
     ParsedDebt,
     ParsedNetWorth,
+    CashflowInsightResponse,
     normalize_indonesian_currency,
 )
 
@@ -41,6 +42,16 @@ class ParseDebtRequest(BaseModel):
 
 class ParseNetWorthRequest(BaseModel):
     text: str = Field(..., example="saldo BCA saya 12 juta")
+
+class AnalyzeCashflowRequest(BaseModel):
+    available_balance: int = Field(..., example=5200000)
+    daily_burn_rate: int = Field(..., example=185000)
+    projected_expense: int = Field(..., example=3885000)
+    upcoming_obligations: int = Field(default=0, example=1150000)
+    projected_balance: int = Field(..., example=165000)
+    risk_level: str = Field(..., example="risky")
+    target_date: str = Field(..., example="2026-07-25")
+    top_categories: list[str] = Field(default=[], example=["food", "transport"])
 
 class TransactionItem(BaseModel):
     type: str = Field(..., example="expense")
@@ -72,7 +83,8 @@ def read_root():
             "analyze": "/analyze",
             "ocr": "/ocr",
             "parse-debt": "/parse-debt",
-            "parse-networth": "/parse-networth"
+            "parse-networth": "/parse-networth",
+            "analyze-cashflow": "/analyze-cashflow"
         }
     }
 
@@ -118,6 +130,24 @@ def parse_networth(request: ParseNetWorthRequest):
         return parsed_result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse networth: {str(e)}")
+
+@app.post("/analyze-cashflow", response_model=CashflowInsightResponse)
+def analyze_cashflow(request: AnalyzeCashflowRequest):
+    """Generate AI-powered cashflow insight in Indonesian based on prediction data."""
+    try:
+        result = parser_service.analyze_cashflow(
+            available_balance=request.available_balance,
+            daily_burn_rate=request.daily_burn_rate,
+            projected_expense=request.projected_expense,
+            upcoming_obligations=request.upcoming_obligations,
+            projected_balance=request.projected_balance,
+            risk_level=request.risk_level,
+            target_date=request.target_date,
+            top_categories=request.top_categories,
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to analyze cashflow: {str(e)}")
 
 @app.post("/analyze", response_model=AnalyzeResponse)
 def analyze_transactions(request: AnalyzeRequest):
