@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"log"
 	"math"
 	"sort"
 	"strings"
@@ -157,7 +158,7 @@ func (s *financeService) PredictCashflow(telegramID int64, targetDate time.Time)
 		return nil, "", fmt.Errorf("failed to save prediction: %w", err)
 	}
 
-	// 11. Format output message in Indonesian Rupiah
+	// 11. Format deterministic output message in Indonesian Rupiah
 	var msgText strings.Builder
 	msgText.WriteString("🔮 *Proyeksi Cashflow*\n\n")
 	msgText.WriteString(fmt.Sprintf("• *Periode:* %s s/d %s (%d hari)\n",
@@ -168,9 +169,89 @@ func (s *financeService) PredictCashflow(telegramID int64, targetDate time.Time)
 	msgText.WriteString(fmt.Sprintf("• *Kewajiban Mendatang:* %s\n", formatIDRCurrency(upcomingObligations)))
 	msgText.WriteString(fmt.Sprintf("• *Proyeksi Saldo Akhir:* %s\n\n", formatIDRCurrency(projectedBalance)))
 	msgText.WriteString(fmt.Sprintf("• *Status Risiko:* %s\n\n", statusLabel))
-	msgText.WriteString(fmt.Sprintf("💡 *Insight/Saran Keuangan:*\n%s", insight))
+
+	// 12. Enrich with AI insight (best-effort; falls back to deterministic insight)
+	aiInsight := s.fetchCashflowAIInsight(prediction, target, allTxs)
+	msgText.WriteString("💡 *Analisis AI:*\n")
+	msgText.WriteString(aiInsight)
 
 	return prediction, msgText.String(), nil
+}
+
+// fetchCashflowAIInsight calls the Python AI service and formats the response.
+// It always returns a non-empty string — falls back to the deterministic insight
+// if the AI service is unavailable or returns an error.
+func (s *financeService) fetchCashflowAIInsight(p *models.CashflowPrediction, target time.Time, allTxs []*models.Transaction) string {
+	if s.cashflowAI == nil {
+		return p.Insight
+	}
+
+	// Collect top spending categories from transactions (last 14 days)
+	now := time.Now().In(s.loc).Truncate(24 * time.Hour)
+	fourteenDaysAgo := now.AddDate(0, 0, -14)
+	catTotals := make(map[string]int64)
+	for _, tx := range allTxs {
+		if tx.Type == "expense" && !tx.TransactionDate.Before(fourteenDaysAgo) && tx.TransactionDate.Before(now.AddDate(0, 0, 1)) {
+			catTotals[tx.Category] += tx.Amount
+		}
+	}
+	type catEntry struct {
+		name string
+		total int64
+	}
+	var cats []catEntry
+	for cat, total := range catTotals {
+		cats = append(cats, catEntry{cat, total})
+	}
+	sort.Slice(cats, func(i, j int) bool { return cats[i].total > cats[j].total })
+	var topCategories []string
+	for i, c := range cats {
+		if i >= 3 {
+			break
+		}
+		topCategories = append(topCategories, c.name)
+	}
+
+	req := CashflowInsightRequest{
+		AvailableBalance:    p.AvailableBalance,
+		DailyBurnRate:       p.DailyBurnRate,
+		ProjectedExpense:    p.ProjectedExpense,
+		UpcomingObligations: p.UpcomingObligations,
+		ProjectedBalance:    p.ProjectedBalance,
+		RiskLevel:           p.RiskLevel,
+		TargetDate:          target.Format("2006-01-02"),
+		TopCategories:       topCategories,
+	}
+
+	insight, err := s.cashflowAI.AnalyzeCashflow(req)
+	if err != nil {
+		log.Printf("[PredictCashflow] AI insight failed (using fallback): %v", err)
+		return p.Insight
+	}
+
+	// Build formatted AI insight block
+	var sb strings.Builder
+	sb.WriteString(insight.Summary)
+	if len(insight.Recommendations) > 0 {
+		sb.WriteString("\n\n📌 *Rekomendasi:*\n")
+		for i, rec := range insight.Recommendations {
+			// Cap at 3 recommendations to stay within Telegram message limit
+			if i >= 3 {
+				break
+			}
+			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, rec))
+		}
+	}
+	return sb.String()
+}
+
+// AnalyzeCashflowInsight is a pass-through for the CashflowAIClient,
+// exposed on the FinanceService interface for direct use (e.g. testing).
+func (s *financeService) AnalyzeCashflowInsight(req CashflowInsightRequest) (*CashflowInsightResponse, error) {
+	if s.cashflowAI == nil {
+		return nil, fmt.Errorf("cashflow AI client not configured")
+	}
+	return s.cashflowAI.AnalyzeCashflow(req)
 }
 
 func detectSubscriptions(txs []*models.Transaction) []Subscription {

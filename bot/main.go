@@ -78,9 +78,10 @@ func main() {
 	aiClient := services.NewAIClient(cfg.AIServiceURL)
 	debtAIClient := services.NewDebtAIClient(cfg.AIServiceURL)
 	networthAIClient := services.NewNetWorthAIClient(cfg.AIServiceURL)
+	cashflowAIClient := services.NewCashflowAIClient(cfg.AIServiceURL)
 
 	// Initialize services with repository injections
-	financeSvc := services.NewFinanceService(aiClient, debtAIClient, networthAIClient, userRepo, txRepo, repRepo, budgetRepo, goalRepo, walletRepo, chatMemoryRepo, debtRepo, netWorthRepo, cashflowRepo)
+	financeSvc := services.NewFinanceService(aiClient, debtAIClient, networthAIClient, cashflowAIClient, userRepo, txRepo, repRepo, budgetRepo, goalRepo, walletRepo, chatMemoryRepo, debtRepo, netWorthRepo, cashflowRepo)
 
 	// Initialize Hermes LLM Client and Orchestration Service
 	// Resolve LLM parameters with support for LLM_BASE_URL env setting

@@ -60,12 +60,14 @@ type FinanceService interface {
 	CreateDailyNetWorthSnapshot(telegramID int64) (*models.NetWorthSnapshot, error)
 	ParseNetWorthText(text string) (*NetWorthParseResponse, error)
 	PredictCashflow(telegramID int64, targetDate time.Time) (*models.CashflowPrediction, string, error)
+	AnalyzeCashflowInsight(req CashflowInsightRequest) (*CashflowInsightResponse, error)
 }
 
 type financeService struct {
 	ai             AIClient
 	debtAI         DebtAIClient
 	networthAI     NetWorthAIClient
+	cashflowAI     CashflowAIClient
 	userRepo       repositories.UserRepository
 	txRepo         repositories.TransactionRepository
 	repRepo        repositories.ReportRepository
@@ -83,6 +85,7 @@ func NewFinanceService(
 	ai AIClient,
 	debtAI DebtAIClient,
 	networthAI NetWorthAIClient,
+	cashflowAI CashflowAIClient,
 	userRepo repositories.UserRepository,
 	txRepo repositories.TransactionRepository,
 	repRepo repositories.ReportRepository,
@@ -107,6 +110,7 @@ func NewFinanceService(
 		ai:             ai,
 		debtAI:         debtAI,
 		networthAI:     networthAI,
+		cashflowAI:     cashflowAI,
 		userRepo:       userRepo,
 		txRepo:         txRepo,
 		repRepo:        repRepo,

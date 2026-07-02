@@ -71,7 +71,7 @@ func newTestFinanceService(t *testing.T, debts []*models.Debt, totalPayable, tot
 	userRepo := &fakeUserRepo{user: &models.User{ID: "user-1", TelegramID: 111}}
 	debtRepo := &fakeDebtRepo{activeDebts: debts, totalPayable: totalPayable, totalReceivable: totalReceivable}
 
-	return NewFinanceService(nil, nil, nil, userRepo, nil, nil, nil, nil, nil, nil, debtRepo, nil, &fakeCashflowRepo{})
+	return NewFinanceService(nil, nil, nil, nil, userRepo, nil, nil, nil, nil, nil, nil, debtRepo, nil, &fakeCashflowRepo{})
 }
 
 func ptrTime(t time.Time) *time.Time { return &t }
