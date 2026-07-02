@@ -494,6 +494,43 @@ func (h *BotHandler) handleDebtCancel(telegramID int64, parts []string) string {
 func (h *BotHandler) handleTextMessage(msg *tgbotapi.Message) {
 	log.Printf("Parsing text message with Hermes: %s", msg.Text)
 
+	// Intercept custom keyboard buttons
+	text := strings.TrimSpace(msg.Text)
+	switch text {
+	case "📊 Rekap Bulan Ini":
+		replyText, err := h.finance.GetMonthSummary(msg.From.ID)
+		if err != nil {
+			replyText = "Waduh, gagal narik rekap bulanan lu. Coba lagi ntar ya bro!"
+		}
+		h.sendReply(msg.Chat.ID, replyText, msg.MessageID)
+		return
+	case "🤖 AI Analisis":
+		replyText, err := h.finance.GenerateAIAnalysis(msg.From.ID)
+		if err != nil {
+			replyText = fmt.Sprintf("⚠️ *Error pas analisis keuangan lu nih:*\n%v", err)
+		}
+		h.sendReply(msg.Chat.ID, replyText, msg.MessageID)
+		return
+	case "💵 Cek Dompet":
+		replyText, err := h.finance.GetWalletBalances(msg.From.ID)
+		if err != nil {
+			replyText = fmt.Sprintf("⚠️ *Gagal mengambil saldo dompet:*\n%v", err)
+		}
+		h.sendReply(msg.Chat.ID, replyText, msg.MessageID)
+		return
+	case "❌ Hapus Terakhir":
+		h.handleDeleteCommand(msg.Chat.ID, msg.From.ID, "last", msg.MessageID)
+		return
+	case "📋 Menu Budget":
+		replyText := h.handleBudgetCommand(msg.From.ID, "")
+		h.sendReply(msg.Chat.ID, replyText, msg.MessageID)
+		return
+	case "🤝 Kelola Hutang":
+		replyText := h.handleDebtCommand(msg.From.ID, "")
+		h.sendReply(msg.Chat.ID, replyText, msg.MessageID)
+		return
+	}
+
 	if pr := getPendingReceipt(msg.Chat.ID); pr != nil && pr.AwaitingEdit {
 		h.handleReceiptAmountEdit(msg, pr)
 		return
@@ -929,13 +966,32 @@ func formatReceiptDescription(pr *PendingReceipt) string {
 	return "Scan struk"
 }
 
-func (h *BotHandler) sendReply(chatID int64, text string, replyToMessageID int) {
-	reply := tgbotapi.NewMessage(chatID, text)
-	reply.ReplyToMessageID = replyToMessageID
-	reply.ParseMode = "markdown"
+func GetMainMenuKeyboard() tgbotapi.ReplyKeyboardMarkup {
+	keyboard := tgbotapi.NewReplyKeyboard(
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("📊 Rekap Bulan Ini"),
+			tgbotapi.NewKeyboardButton("🤖 AI Analisis"),
+		),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("💵 Cek Dompet"),
+			tgbotapi.NewKeyboardButton("❌ Hapus Terakhir"),
+		),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("📋 Menu Budget"),
+			tgbotapi.NewKeyboardButton("🤝 Kelola Hutang"),
+		),
+	)
+	keyboard.ResizeKeyboard = true
+	return keyboard
+}
 
-	if _, err := h.bot.Send(reply); err != nil {
-		log.Printf("Failed to send message: %v", err)
+func (h *BotHandler) sendReply(chatID int64, text string, replyToMessageID int) {
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ReplyToMessageID = replyToMessageID
+	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = GetMainMenuKeyboard()
+	if _, err := h.bot.Send(msg); err != nil {
+		log.Printf("Error sending message: %v", err)
 	}
 }
 
