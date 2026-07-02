@@ -22,15 +22,15 @@ class ParsedTransaction(BaseModel):
 
 class ReceiptItem(BaseModel):
     name: str = Field(..., description="Item name as printed on the receipt")
-    qty: int = Field(default=1, description="Quantity purchased, defaults to 1")
+    qty: int = Field(..., description="Quantity purchased, defaults to 1")
     price: int = Field(..., description="Unit price in IDR as an integer")
 
 class ParsedReceipt(BaseModel):
-    merchant: str = Field(default="", description="Store or restaurant name")
-    items: list[ReceiptItem] = Field(default=[], description="List of purchased items")
-    total: int = Field(default=0, description="Total amount in IDR as an integer")
-    date: str | None = Field(default=None, description="ISO 8601 date string or null if not found")
-    category: str = Field(default="other", description="Inferred transaction category")
+    merchant: str = Field(..., description="Store or restaurant name")
+    items: list[ReceiptItem] = Field(..., description="List of purchased items")
+    total: int = Field(..., description="Total amount in IDR as an integer")
+    date: str | None = Field(..., description="ISO 8601 date string or null if not found")
+    category: str = Field(..., description="Inferred transaction category")
 
     @field_validator("category", mode="before")
     @classmethod
@@ -48,14 +48,46 @@ VALID_DEBT_DIRECTIONS = {"receivable", "payable"}
 
 JAKARTA_TZ = ZoneInfo("Asia/Jakarta")
 
+def clean_gemini_schema(pydantic_model) -> dict:
+    schema = pydantic_model.model_json_schema()
+    
+    def clean_dict(d):
+        if not isinstance(d, dict):
+            return
+        d.pop("default", None)
+        d.pop("title", None)
+        
+        if "anyOf" in d:
+            any_of = d.pop("anyOf")
+            non_null_types = [t for t in any_of if t.get("type") != "null"]
+            if len(non_null_types) == 1:
+                d["type"] = non_null_types[0].get("type")
+                d["nullable"] = True
+                for k, v in non_null_types[0].items():
+                    if k != "type":
+                        d[k] = v
+            else:
+                d["type"] = "string"
+                d["nullable"] = True
+                
+        for val in d.values():
+            if isinstance(val, dict):
+                clean_dict(val)
+            elif isinstance(val, list):
+                for item in val:
+                    clean_dict(item)
+                    
+    clean_dict(schema)
+    return schema
+
 class ParsedDebt(BaseModel):
     intent: str = Field(..., description="One of: add_debt, pay_debt, mark_paid, cancel_debt, list_debt, debt_summary, unknown")
-    direction: str | None = Field(default=None, description="'receivable' if the person owes the user, 'payable' if the user owes the person, or null if not applicable")
-    person_name: str | None = Field(default=None, description="Name of the other person involved, or null if not identifiable")
-    amount: int | None = Field(default=None, description="Debt or payment amount as an integer in IDR, or null if not applicable")
-    description: str | None = Field(default=None, description="Short description/reason for the debt, or null if not stated")
-    due_date: str | None = Field(default=None, description="ISO 8601 date (YYYY-MM-DD) if a due date is mentioned, else null. Always left null by the LLM; resolved deterministically in Python.")
-    reason: str | None = Field(default=None, description="Explanation for why intent is 'unknown'; null for all other intents")
+    direction: str | None = Field(..., description="'receivable' if the person owes the user, 'payable' if the user owes the person, or null if not applicable")
+    person_name: str | None = Field(..., description="Name of the other person involved, or null if not identifiable")
+    amount: int | None = Field(..., description="Debt or payment amount as an integer in IDR, or null if not applicable")
+    description: str | None = Field(..., description="Short description/reason for the debt, or null if not stated")
+    due_date: str | None = Field(..., description="ISO 8601 date (YYYY-MM-DD) if a due date is mentioned, else null. Always left null by the LLM; resolved deterministically in Python.")
+    reason: str | None = Field(..., description="Explanation for why intent is 'unknown'; null for all other intents")
 
     @field_validator("intent", mode="before")
     @classmethod
@@ -77,12 +109,12 @@ class ParsedDebt(BaseModel):
 class AnalyzeResponse(BaseModel):
     summary: str = Field(..., description="Concise paragraph summary of the user financial health and spending patterns in casual Indonesian")
     insights: list[str] = Field(..., description="List of actionable insights and observations in casual Indonesian")
-    anomalies: list[str] = Field(default=[], description="Detected spending anomalies (unusually high expenses) in casual Indonesian")
-    wasteful_spending: list[str] = Field(default=[], description="Detected wasteful spending (frequent small or unnecessary expenses) in casual Indonesian")
-    highest_spending_day: str = Field(default="", description="The day with highest spending, formatted nicely (e.g. 'Senin, 15 Jun 2026 sebesar Rp 500.000')")
-    trends: list[str] = Field(default=[], description="Category trend increases or decreases compared to previous transactions in casual Indonesian")
-    saving_recommendations: list[str] = Field(default=[], description="Actionable saving recommendations in casual Indonesian")
-    financial_score: int = Field(default=80, description="Financial score from 0 to 100 based on their savings rate, budgeting, and spending habits")
+    anomalies: list[str] = Field(..., description="Detected spending anomalies (unusually high expenses) in casual Indonesian")
+    wasteful_spending: list[str] = Field(..., description="Detected wasteful spending (frequent small or unnecessary expenses) in casual Indonesian")
+    highest_spending_day: str = Field(..., description="The day with highest spending, formatted nicely (e.g. 'Senin, 15 Jun 2026 sebesar Rp 500.000')")
+    trends: list[str] = Field(..., description="Category trend increases or decreases compared to previous transactions in casual Indonesian")
+    saving_recommendations: list[str] = Field(..., description="Actionable saving recommendations in casual Indonesian")
+    financial_score: int = Field(..., description="Financial score from 0 to 100 based on their savings rate, budgeting, and spending habits")
 
 def normalize_indonesian_currency(text: str, support_k: bool = False) -> str:
     """
@@ -582,7 +614,7 @@ Return ONLY a JSON object. Do not wrap in markdown tags like ```json.
                 prompt,
                 generation_config=genai.types.GenerationConfig(
                     response_mime_type="application/json",
-                    response_schema=ParsedTransaction,
+                    response_schema=clean_gemini_schema(ParsedTransaction),
                 )
             )
             
@@ -717,7 +749,7 @@ Rules:
                 prompt,
                 generation_config=genai.types.GenerationConfig(
                     response_mime_type="application/json",
-                    response_schema=ParsedDebt,
+                    response_schema=clean_gemini_schema(ParsedDebt),
                 )
             )
 
@@ -791,7 +823,7 @@ Rules:
                     receipt_prompt,
                     generation_config=genai.types.GenerationConfig(
                         response_mime_type="application/json",
-                        response_schema=ParsedReceipt,
+                        response_schema=clean_gemini_schema(ParsedReceipt),
                     )
                 )
                 raw_json = response.text.strip()
@@ -916,7 +948,7 @@ Return ONLY the JSON object. Do not wrap in markdown tags.
                 prompt,
                 generation_config=genai.types.GenerationConfig(
                     response_mime_type="application/json",
-                    response_schema=AnalyzeResponse,
+                    response_schema=clean_gemini_schema(AnalyzeResponse),
                 )
             )
             
