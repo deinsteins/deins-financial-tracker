@@ -199,6 +199,15 @@ func (h *BotHandler) handleCommand(msg *tgbotapi.Message) {
 		h.handleDeleteCommand(msg.Chat.ID, msg.From.ID, msg.CommandArguments(), msg.MessageID)
 		return
 
+	case "asset":
+		replyText = h.handleAssetCommand(msg.From.ID, msg.CommandArguments())
+
+	case "liability":
+		replyText = h.handleLiabilityCommand(msg.From.ID, msg.CommandArguments())
+
+	case "networth":
+		replyText = h.handleNetWorthCommand(msg.From.ID, msg.CommandArguments())
+
 	default:
 		replyText = "Perintah apaan tuh? Coba cek /start aja biar jelas bro!"
 	}
@@ -539,6 +548,13 @@ func (h *BotHandler) handleTextMessage(msg *tgbotapi.Message) {
 		replyText, err := h.finance.GetWalletBalances(msg.From.ID)
 		if err != nil {
 			replyText = fmt.Sprintf("⚠️ *Gagal mengambil saldo dompet:*\n%v", err)
+		}
+		h.sendReply(msg.Chat.ID, replyText, msg.MessageID)
+		return
+	case "💰 Cek Net Worth":
+		replyText, err := h.finance.GetNetWorthStatus(msg.From.ID)
+		if err != nil {
+			replyText = fmt.Sprintf("⚠️ *Gagal mengambil status net worth:*\n%v", err)
 		}
 		h.sendReply(msg.Chat.ID, replyText, msg.MessageID)
 		return
@@ -998,11 +1014,14 @@ func GetMainMenuKeyboard() tgbotapi.ReplyKeyboardMarkup {
 		),
 		tgbotapi.NewKeyboardButtonRow(
 			tgbotapi.NewKeyboardButton("💵 Cek Dompet"),
-			tgbotapi.NewKeyboardButton("❌ Hapus Terakhir"),
+			tgbotapi.NewKeyboardButton("💰 Cek Net Worth"),
 		),
 		tgbotapi.NewKeyboardButtonRow(
 			tgbotapi.NewKeyboardButton("📋 Menu Budget"),
 			tgbotapi.NewKeyboardButton("🤝 Kelola Hutang"),
+		),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("❌ Hapus Terakhir"),
 		),
 	)
 	keyboard.ResizeKeyboard = true
@@ -1315,5 +1334,275 @@ func (h *BotHandler) handleDeleteCommand(chatID int64, telegramID int64, args st
 
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
 	h.sendReplyWithKeyboard(chatID, sb.String(), replyToMessageID, keyboard)
+}
+
+func (h *BotHandler) handleAssetCommand(telegramID int64, args string) string {
+	args = strings.TrimSpace(args)
+	if args == "" {
+		return "📋 *Panduan Perintah /asset*:\n\n" +
+			"• `/asset add <tipe> <nama> <jumlah>`\n  _Tambah aset baru (contoh tipe: bank, cash, investment, property, etc.)_\n  _Contoh: `/asset add bank BCA 12000000`_\n\n" +
+			"• `/asset set <nama> <jumlah>`\n  _Update nilai jumlah aset yang sudah ada_\n  _Contoh: `/asset set BCA 15000000`_\n\n" +
+			"• `/asset list`\n  _Lihat daftar semua aset lu_\n\n" +
+			"• `/asset delete <nama>`\n  _Hapus aset dari daftar_\n  _Contoh: `/asset delete BCA`_"
+	}
+
+	parts := strings.Fields(args)
+	subcmd := strings.ToLower(parts[0])
+
+	switch subcmd {
+	case "add":
+		if len(parts) < 4 {
+			return "⚠️ Format salah.\nGunakan: `/asset add <tipe> <nama> <jumlah>`\n_Contoh: `/asset add bank BCA 12000000`_"
+		}
+		assetType := parts[1]
+		name := parts[2]
+		amount, err := parseAmount(parts[3])
+		if err != nil {
+			return fmt.Sprintf("⚠️ Jumlah tidak valid: %v\n_Coba: 12jt, 12000000, 1.5jt_", err)
+		}
+
+		asset, err := h.finance.AddAsset(telegramID, assetType, name, amount, "")
+		if err != nil {
+			return fmt.Sprintf("⚠️ Gagal menambahkan aset: %v", err)
+		}
+		return fmt.Sprintf("✅ *Aset Berhasil Ditambahkan!* 🎉\n\n• *Nama:* %s\n• *Tipe:* %s\n• *Jumlah:* %s", asset.Name, asset.AssetType, formatIDRCurrency(asset.Amount))
+
+	case "set":
+		if len(parts) < 3 {
+			return "⚠️ Format salah.\nGunakan: `/asset set <nama> <jumlah>`\n_Contoh: `/asset set BCA 15000000`_"
+		}
+		name := parts[1]
+		amount, err := parseAmount(parts[2])
+		if err != nil {
+			return fmt.Sprintf("⚠️ Jumlah tidak valid: %v\n_Coba: 15jt, 15000000_", err)
+		}
+
+		assets, err := h.finance.GetAssets(telegramID)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Gagal mengambil daftar aset: %v", err)
+		}
+
+		var targetAsset *models.Asset
+		for _, a := range assets {
+			if strings.EqualFold(a.Name, name) {
+				targetAsset = a
+				break
+			}
+		}
+
+		if targetAsset == nil {
+			return fmt.Sprintf("⚠️ Aset dengan nama *%s* tidak ditemukan.", name)
+		}
+
+		err = h.finance.UpdateAssetAmount(telegramID, targetAsset.ID, amount)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Gagal mengupdate aset: %v", err)
+		}
+
+		return fmt.Sprintf("✅ *Aset Berhasil Diupdate!* 📈\n\n• *Nama:* %s\n• *Jumlah Baru:* %s", targetAsset.Name, formatIDRCurrency(amount))
+
+	case "list":
+		assets, err := h.finance.GetAssets(telegramID)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Gagal mengambil daftar aset: %v", err)
+		}
+
+		if len(assets) == 0 {
+			return "📂 *Daftar aset lu masih kosong, bro.*"
+		}
+
+		var msg strings.Builder
+		msg.WriteString("📂 *Daftar Aset Lu:*\n\n")
+		var total int64
+		for _, a := range assets {
+			msg.WriteString(fmt.Sprintf("• [%s] *%s*: %s\n", a.AssetType, a.Name, formatIDRCurrency(a.Amount)))
+			total += a.Amount
+		}
+		msg.WriteString(fmt.Sprintf("\n🧮 *Total Aset:* %s", formatIDRCurrency(total)))
+		return msg.String()
+
+	case "delete":
+		if len(parts) < 2 {
+			return "⚠️ Format salah.\nGunakan: `/asset delete <nama>`\n_Contoh: `/asset delete BCA`_"
+		}
+		name := parts[1]
+
+		assets, err := h.finance.GetAssets(telegramID)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Gagal mengambil daftar aset: %v", err)
+		}
+
+		var targetAsset *models.Asset
+		for _, a := range assets {
+			if strings.EqualFold(a.Name, name) {
+				targetAsset = a
+				break
+			}
+		}
+
+		if targetAsset == nil {
+			return fmt.Sprintf("⚠️ Aset dengan nama *%s* tidak ditemukan.", name)
+		}
+
+		err = h.finance.DeleteAsset(telegramID, targetAsset.ID)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Gagal menghapus aset: %v", err)
+		}
+
+		return fmt.Sprintf("✅ *Aset Berhasil Dihapus!* ❌\n\n• *Nama:* %s", targetAsset.Name)
+
+	default:
+		return "⚠️ Sub-perintah tidak dikenal.\n\nGunakan:\n• `/asset add <tipe> <nama> <jumlah>`\n• `/asset set <nama> <jumlah>`\n• `/asset list`\n• `/asset delete <nama>`"
+	}
+}
+
+func (h *BotHandler) handleLiabilityCommand(telegramID int64, args string) string {
+	args = strings.TrimSpace(args)
+	if args == "" {
+		return "📋 *Panduan Perintah /liability*:\n\n" +
+			"• `/liability add <tipe> <nama> <jumlah>`\n  _Tambah kewajiban/hutang baru (contoh tipe: loan, credit_card, debt, etc.)_\n  _Contoh: `/liability add loan Cicilan_Motor 2000000`_\n\n" +
+			"• `/liability set <nama> <jumlah>`\n  _Update nilai jumlah kewajiban yang sudah ada_\n  _Contoh: `/liability set Cicilan_Motor 1500000`_\n\n" +
+			"• `/liability list`\n  _Lihat daftar semua kewajiban lu_\n\n" +
+			"• `/liability delete <nama>`\n  _Hapus kewajiban dari daftar_\n  _Contoh: `/liability delete Cicilan_Motor`_"
+	}
+
+	parts := strings.Fields(args)
+	subcmd := strings.ToLower(parts[0])
+
+	switch subcmd {
+	case "add":
+		if len(parts) < 4 {
+			return "⚠️ Format salah.\nGunakan: `/liability add <tipe> <nama> <jumlah>`\n_Contoh: `/liability add loan Cicilan_Motor 2000000`_"
+		}
+		liabilityType := parts[1]
+		name := parts[2]
+		amount, err := parseAmount(parts[3])
+		if err != nil {
+			return fmt.Sprintf("⚠️ Jumlah tidak valid: %v\n_Coba: 2jt, 2000000, 1.5jt_", err)
+		}
+
+		liability, err := h.finance.AddLiability(telegramID, liabilityType, name, amount, nil, "")
+		if err != nil {
+			return fmt.Sprintf("⚠️ Gagal menambahkan kewajiban: %v", err)
+		}
+		return fmt.Sprintf("✅ *Kewajiban Berhasil Ditambahkan!* 🎉\n\n• *Nama:* %s\n• *Tipe:* %s\n• *Jumlah:* %s", liability.Name, liability.LiabilityType, formatIDRCurrency(liability.Amount))
+
+	case "set":
+		if len(parts) < 3 {
+			return "⚠️ Format salah.\nGunakan: `/liability set <nama> <jumlah>`\n_Contoh: `/liability set Cicilan_Motor 1500000`_"
+		}
+		name := parts[1]
+		amount, err := parseAmount(parts[2])
+		if err != nil {
+			return fmt.Sprintf("⚠️ Jumlah tidak valid: %v\n_Coba: 1.5jt, 1500000_", err)
+		}
+
+		liabilities, err := h.finance.GetLiabilities(telegramID)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Gagal mengambil daftar kewajiban: %v", err)
+		}
+
+		var targetLiab *models.Liability
+		for _, l := range liabilities {
+			if strings.EqualFold(l.Name, name) {
+				targetLiab = l
+				break
+			}
+		}
+
+		if targetLiab == nil {
+			return fmt.Sprintf("⚠️ Kewajiban dengan nama *%s* tidak ditemukan.", name)
+		}
+
+		err = h.finance.UpdateLiabilityAmount(telegramID, targetLiab.ID, amount)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Gagal mengupdate kewajiban: %v", err)
+		}
+
+		return fmt.Sprintf("✅ *Kewajiban Berhasil Diupdate!* 📈\n\n• *Nama:* %s\n• *Jumlah Baru:* %s", targetLiab.Name, formatIDRCurrency(amount))
+
+	case "list":
+		liabilities, err := h.finance.GetLiabilities(telegramID)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Gagal mengambil daftar kewajiban: %v", err)
+		}
+
+		if len(liabilities) == 0 {
+			return "📂 *Daftar kewajiban lu masih kosong, bro.*"
+		}
+
+		var msg strings.Builder
+		msg.WriteString("💸 *Daftar Kewajiban Lu:*\n\n")
+		var total int64
+		for _, l := range liabilities {
+			dueStr := ""
+			if l.DueDate != nil {
+				dueStr = fmt.Sprintf(" - Jt Tempo: %s", l.DueDate.Format("02 Jan 2006"))
+			}
+			msg.WriteString(fmt.Sprintf("• [%s] *%s*: %s%s\n", l.LiabilityType, l.Name, formatIDRCurrency(l.Amount), dueStr))
+			total += l.Amount
+		}
+		msg.WriteString(fmt.Sprintf("\n🧮 *Total Kewajiban:* %s", formatIDRCurrency(total)))
+		return msg.String()
+
+	case "delete":
+		if len(parts) < 2 {
+			return "⚠️ Format salah.\nGunakan: `/liability delete <nama>`\n_Contoh: `/liability delete Cicilan_Motor`_"
+		}
+		name := parts[1]
+
+		liabilities, err := h.finance.GetLiabilities(telegramID)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Gagal mengambil daftar kewajiban: %v", err)
+		}
+
+		var targetLiab *models.Liability
+		for _, l := range liabilities {
+			if strings.EqualFold(l.Name, name) {
+				targetLiab = l
+				break
+			}
+		}
+
+		if targetLiab == nil {
+			return fmt.Sprintf("⚠️ Kewajiban dengan nama *%s* tidak ditemukan.", name)
+		}
+
+		err = h.finance.DeleteLiability(telegramID, targetLiab.ID)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Gagal menghapus kewajiban: %v", err)
+		}
+
+		return fmt.Sprintf("✅ *Kewajiban Berhasil Dihapus!* ❌\n\n• *Nama:* %s", targetLiab.Name)
+
+	default:
+		return "⚠️ Sub-perintah tidak dikenal.\n\nGunakan:\n• `/liability add <tipe> <nama> <jumlah>`\n• `/liability set <nama> <jumlah>`\n• `/liability list`\n• `/liability delete <nama>`"
+	}
+}
+
+func (h *BotHandler) handleNetWorthCommand(telegramID int64, args string) string {
+	args = strings.TrimSpace(args)
+	if args == "" {
+		reply, err := h.finance.GetNetWorthStatus(telegramID)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Gagal mengambil status net worth: %v", err)
+		}
+		return reply
+	}
+
+	parts := strings.Fields(args)
+	subcmd := strings.ToLower(parts[0])
+
+	switch subcmd {
+	case "history":
+		reply, err := h.finance.GetNetWorthHistory(telegramID)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Gagal mengambil riwayat net worth: %v", err)
+		}
+		return reply
+
+	default:
+		return "⚠️ Sub-perintah tidak dikenal.\n\nGunakan:\n• `/networth` — Lihat status net worth saat ini\n• `/networth history` — Lihat riwayat perkembangan net worth"
+	}
 }
 

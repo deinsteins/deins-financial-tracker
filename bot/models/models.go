@@ -80,3 +80,38 @@ type DebtPayment struct {
 	PaidAt time.Time `json:"paid_at"`
 }
 
+type Asset struct {
+	ID        string    `json:"id"`
+	UserID    string    `json:"user_id"`
+	AssetType string    `json:"asset_type"`
+	Name      string    `json:"name"`
+	Amount    int64     `json:"amount"`
+	Currency  string    `json:"currency"`
+	Notes     string    `json:"notes"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type Liability struct {
+	ID            string     `json:"id"`
+	UserID        string     `json:"user_id"`
+	LiabilityType string     `json:"liability_type"`
+	Name          string     `json:"name"`
+	Amount        int64      `json:"amount"`
+	Currency      string     `json:"currency"`
+	DueDate       *time.Time `json:"due_date,omitempty"`
+	Notes         string     `json:"notes"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+}
+
+type NetWorthSnapshot struct {
+	ID               string    `json:"id"`
+	UserID           string    `json:"user_id"`
+	TotalAssets      int64     `json:"total_assets"`
+	TotalLiabilities int64     `json:"total_liabilities"`
+	NetWorth         int64     `json:"net_worth"`
+	SnapshotDate     time.Time `json:"snapshot_date"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+

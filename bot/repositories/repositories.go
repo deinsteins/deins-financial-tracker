@@ -84,3 +84,17 @@ type DebtReminderRepository interface {
 	TryRecordReminder(debtID, reminderType string, reminderDate time.Time) (bool, error)
 }
 
+type NetWorthRepository interface {
+	CreateAsset(asset *models.Asset) error
+	UpdateAssetAmount(id string, amount int64) error
+	DeleteAsset(id string) error
+	GetAssetsByUser(userID string) ([]*models.Asset, error)
+	CreateLiability(liability *models.Liability) error
+	UpdateLiabilityAmount(id string, amount int64) error
+	DeleteLiability(id string) error
+	GetLiabilitiesByUser(userID string) ([]*models.Liability, error)
+	CalculateNetWorth(userID string) (totalAssets int64, totalLiabilities int64, err error)
+	CreateNetWorthSnapshot(snapshot *models.NetWorthSnapshot) error
+	GetNetWorthHistory(userID string) ([]*models.NetWorthSnapshot, error)
+}
+

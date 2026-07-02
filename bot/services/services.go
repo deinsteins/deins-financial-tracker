@@ -46,6 +46,18 @@ type FinanceService interface {
 	SetBudgetCycleStartDay(telegramID int64, startDay int) (string, error)
 	GetDebtDetail(telegramID int64, personName string) (string, error)
 	GetDebtHistory(telegramID int64, personName string) (string, error)
+
+	AddAsset(telegramID int64, assetType, name string, amount int64, notes string) (*models.Asset, error)
+	UpdateAssetAmount(telegramID int64, assetID string, amount int64) error
+	DeleteAsset(telegramID int64, assetID string) error
+	GetAssets(telegramID int64) ([]*models.Asset, error)
+	AddLiability(telegramID int64, liabilityType, name string, amount int64, dueDate *time.Time, notes string) (*models.Liability, error)
+	UpdateLiabilityAmount(telegramID int64, liabilityID string, amount int64) error
+	DeleteLiability(telegramID int64, liabilityID string) error
+	GetLiabilities(telegramID int64) ([]*models.Liability, error)
+	GetNetWorthStatus(telegramID int64) (string, error)
+	GetNetWorthHistory(telegramID int64) (string, error)
+	CreateDailyNetWorthSnapshot(telegramID int64) (*models.NetWorthSnapshot, error)
 }
 
 type financeService struct {
@@ -59,6 +71,7 @@ type financeService struct {
 	walletRepo     repositories.WalletRepository
 	chatMemoryRepo repositories.ChatMemoryRepository
 	debtRepo       repositories.DebtRepository
+	netWorthRepo   repositories.NetWorthRepository
 	loc            *time.Location
 }
 
@@ -73,6 +86,7 @@ func NewFinanceService(
 	walletRepo repositories.WalletRepository,
 	chatMemoryRepo repositories.ChatMemoryRepository,
 	debtRepo repositories.DebtRepository,
+	netWorthRepo repositories.NetWorthRepository,
 ) FinanceService {
 	tz := os.Getenv("TZ")
 	if tz == "" {
@@ -94,6 +108,7 @@ func NewFinanceService(
 		walletRepo:     walletRepo,
 		chatMemoryRepo: chatMemoryRepo,
 		debtRepo:       debtRepo,
+		netWorthRepo:   netWorthRepo,
 		loc:            loc,
 	}
 }
@@ -1184,4 +1199,317 @@ func (s *financeService) GetDebtHistory(telegramID int64, personName string) (st
 	}
 
 	return msg.String(), nil
+}
+
+func (s *financeService) AddAsset(telegramID int64, assetType, name string, amount int64, notes string) (*models.Asset, error) {
+	user, err := s.getOrCreateUser(telegramID, "Telegram User")
+	if err != nil {
+		return nil, err
+	}
+	asset := &models.Asset{
+		UserID:    user.ID,
+		AssetType: assetType,
+		Name:      name,
+		Amount:    amount,
+		Notes:     notes,
+	}
+	err = s.netWorthRepo.CreateAsset(asset)
+	if err != nil {
+		return nil, err
+	}
+
+	// Trigger snapshot creation/update
+	_, _ = s.CreateDailyNetWorthSnapshot(telegramID)
+
+	return asset, nil
+}
+
+func (s *financeService) UpdateAssetAmount(telegramID int64, assetID string, amount int64) error {
+	err := s.netWorthRepo.UpdateAssetAmount(assetID, amount)
+	if err != nil {
+		return err
+	}
+
+	// Trigger snapshot creation/update
+	_, _ = s.CreateDailyNetWorthSnapshot(telegramID)
+
+	return nil
+}
+
+func (s *financeService) DeleteAsset(telegramID int64, assetID string) error {
+	err := s.netWorthRepo.DeleteAsset(assetID)
+	if err != nil {
+		return err
+	}
+
+	// Trigger snapshot creation/update
+	_, _ = s.CreateDailyNetWorthSnapshot(telegramID)
+
+	return nil
+}
+
+func (s *financeService) GetAssets(telegramID int64) ([]*models.Asset, error) {
+	user, err := s.getOrCreateUser(telegramID, "Telegram User")
+	if err != nil {
+		return nil, err
+	}
+	return s.netWorthRepo.GetAssetsByUser(user.ID)
+}
+
+func (s *financeService) AddLiability(telegramID int64, liabilityType, name string, amount int64, dueDate *time.Time, notes string) (*models.Liability, error) {
+	user, err := s.getOrCreateUser(telegramID, "Telegram User")
+	if err != nil {
+		return nil, err
+	}
+	liability := &models.Liability{
+		UserID:        user.ID,
+		LiabilityType: liabilityType,
+		Name:          name,
+		Amount:        amount,
+		DueDate:       dueDate,
+		Notes:         notes,
+	}
+	err = s.netWorthRepo.CreateLiability(liability)
+	if err != nil {
+		return nil, err
+	}
+
+	// Trigger snapshot creation/update
+	_, _ = s.CreateDailyNetWorthSnapshot(telegramID)
+
+	return liability, nil
+}
+
+func (s *financeService) UpdateLiabilityAmount(telegramID int64, liabilityID string, amount int64) error {
+	err := s.netWorthRepo.UpdateLiabilityAmount(liabilityID, amount)
+	if err != nil {
+		return err
+	}
+
+	// Trigger snapshot creation/update
+	_, _ = s.CreateDailyNetWorthSnapshot(telegramID)
+
+	return nil
+}
+
+func (s *financeService) DeleteLiability(telegramID int64, liabilityID string) error {
+	err := s.netWorthRepo.DeleteLiability(liabilityID)
+	if err != nil {
+		return err
+	}
+
+	// Trigger snapshot creation/update
+	_, _ = s.CreateDailyNetWorthSnapshot(telegramID)
+
+	return nil
+}
+
+func (s *financeService) GetLiabilities(telegramID int64) ([]*models.Liability, error) {
+	user, err := s.getOrCreateUser(telegramID, "Telegram User")
+	if err != nil {
+		return nil, err
+	}
+	return s.netWorthRepo.GetLiabilitiesByUser(user.ID)
+}
+
+func (s *financeService) GetNetWorthStatus(telegramID int64) (string, error) {
+	user, err := s.getOrCreateUser(telegramID, "Telegram User")
+	if err != nil {
+		return "", err
+	}
+
+	assets, err := s.netWorthRepo.GetAssetsByUser(user.ID)
+	if err != nil {
+		return "", err
+	}
+
+	liabilities, err := s.netWorthRepo.GetLiabilitiesByUser(user.ID)
+	if err != nil {
+		return "", err
+	}
+
+	// Calculate totals and breakdowns
+	var totalAssets, totalLiabilities int64
+	assetBreakdown := make(map[string]int64)
+	liabBreakdown := make(map[string]int64)
+
+	for _, a := range assets {
+		totalAssets += a.Amount
+		assetBreakdown[a.AssetType] += a.Amount
+	}
+	for _, l := range liabilities {
+		totalLiabilities += l.Amount
+		liabBreakdown[l.LiabilityType] += l.Amount
+	}
+	netWorth := totalAssets - totalLiabilities
+
+	// Create or update daily snapshot
+	snapshot := &models.NetWorthSnapshot{
+		UserID:           user.ID,
+		TotalAssets:      totalAssets,
+		TotalLiabilities: totalLiabilities,
+		NetWorth:         netWorth,
+		SnapshotDate:     time.Now().In(s.loc).Truncate(24 * time.Hour),
+	}
+	_ = s.netWorthRepo.CreateNetWorthSnapshot(snapshot)
+
+	var msg strings.Builder
+	msg.WriteString("📊 *Net Worth Summary*\n\n")
+	msg.WriteString(fmt.Sprintf("Total Assets:\n%s\n\n", formatIDRCurrency(totalAssets)))
+	msg.WriteString(fmt.Sprintf("Total Liabilities:\n%s\n\n", formatIDRCurrency(totalLiabilities)))
+	msg.WriteString(fmt.Sprintf("Net Worth:\n%s\n\n", formatIDRCurrency(netWorth)))
+
+	// Assets breakdown (by type)
+	msg.WriteString("Assets:\n")
+	if len(assetBreakdown) == 0 {
+		msg.WriteString("_Belum ada aset recorded._\n")
+	} else {
+		var assetTypes []string
+		for t := range assetBreakdown {
+			assetTypes = append(assetTypes, t)
+		}
+		sort.Strings(assetTypes)
+		for _, t := range assetTypes {
+			typeName := strings.Title(strings.ToLower(t))
+			msg.WriteString(fmt.Sprintf("• %s: %s\n", typeName, formatIDRCurrency(assetBreakdown[t])))
+		}
+	}
+	msg.WriteString("\n")
+
+	// Liabilities breakdown (by type)
+	msg.WriteString("Liabilities:\n")
+	if len(liabBreakdown) == 0 {
+		msg.WriteString("_Belum ada kewajiban recorded._\n")
+	} else {
+		var liabTypes []string
+		for t := range liabBreakdown {
+			liabTypes = append(liabTypes, t)
+		}
+		sort.Strings(liabTypes)
+		for _, t := range liabTypes {
+			typeName := strings.Title(strings.ToLower(t))
+			msg.WriteString(fmt.Sprintf("• %s: %s\n", typeName, formatIDRCurrency(liabBreakdown[t])))
+		}
+	}
+	msg.WriteString("\n")
+
+	// Top 5 Assets
+	msg.WriteString("*Top 5 Assets:*\n")
+	if len(assets) == 0 {
+		msg.WriteString("_Belum ada aset recorded._\n")
+	} else {
+		sort.Slice(assets, func(i, j int) bool {
+			return assets[i].Amount > assets[j].Amount
+		})
+		limit := len(assets)
+		if limit > 5 {
+			limit = 5
+		}
+		for i := 0; i < limit; i++ {
+			msg.WriteString(fmt.Sprintf("%d. %s: %s\n", i+1, assets[i].Name, formatIDRCurrency(assets[i].Amount)))
+		}
+	}
+	msg.WriteString("\n")
+
+	// Top 5 Liabilities
+	msg.WriteString("*Top 5 Liabilities:*\n")
+	if len(liabilities) == 0 {
+		msg.WriteString("_Belum ada kewajiban recorded._\n")
+	} else {
+		sort.Slice(liabilities, func(i, j int) bool {
+			return liabilities[i].Amount > liabilities[j].Amount
+		})
+		limit := len(liabilities)
+		if limit > 5 {
+			limit = 5
+		}
+		for i := 0; i < limit; i++ {
+			msg.WriteString(fmt.Sprintf("%d. %s: %s\n", i+1, liabilities[i].Name, formatIDRCurrency(liabilities[i].Amount)))
+		}
+	}
+	msg.WriteString("\n")
+
+	// Insight and warnings
+	msg.WriteString("Insight:\n")
+	
+	var largestAssetType string
+	var largestAssetAmount int64
+	for t, amt := range assetBreakdown {
+		if amt > largestAssetAmount {
+			largestAssetAmount = amt
+			largestAssetType = strings.Title(strings.ToLower(t))
+		}
+	}
+
+	if netWorth < 0 {
+		msg.WriteString("⚠️ *Peringatan: Net worth kamu negatif! Kewajiban kamu lebih besar dari aset.*")
+	} else if totalAssets > 0 && totalLiabilities > totalAssets/2 {
+		msg.WriteString("⚠️ *Peringatan Risiko: Total kewajiban kamu melebihi 50% dari total aset!*")
+		if largestAssetType != "" {
+			msg.WriteString(fmt.Sprintf(" Asset terbesar ada di kategori %s.", largestAssetType))
+		}
+	} else {
+		msg.WriteString("Net worth kamu positif.")
+		if largestAssetType != "" {
+			msg.WriteString(fmt.Sprintf(" Asset terbesar ada di kategori %s.", largestAssetType))
+		}
+	}
+
+	return msg.String(), nil
+}
+
+func (s *financeService) GetNetWorthHistory(telegramID int64) (string, error) {
+	user, err := s.getOrCreateUser(telegramID, "Telegram User")
+	if err != nil {
+		return "", err
+	}
+
+	history, err := s.netWorthRepo.GetNetWorthHistory(user.ID)
+	if err != nil {
+		return "", err
+	}
+
+	if len(history) == 0 {
+		return "⚠️ Belum ada riwayat perkembangan net worth. Coba tambahkan aset atau kewajiban dulu ya bro!", nil
+	}
+
+	var msg strings.Builder
+	msg.WriteString("📈 *Riwayat Perkembangan Net Worth*\n\n")
+
+	for i, snap := range history {
+		msg.WriteString(fmt.Sprintf("*%d. %s*\n", i+1, snap.SnapshotDate.Format("02 Jan 2006")))
+		msg.WriteString(fmt.Sprintf("• *Total Aset:* %s\n", formatIDRCurrency(snap.TotalAssets)))
+		msg.WriteString(fmt.Sprintf("• *Total Kewajiban:* %s\n", formatIDRCurrency(snap.TotalLiabilities)))
+		msg.WriteString(fmt.Sprintf("• *Net Worth:* %s\n\n", formatIDRCurrency(snap.NetWorth)))
+	}
+
+	return msg.String(), nil
+}
+
+func (s *financeService) CreateDailyNetWorthSnapshot(telegramID int64) (*models.NetWorthSnapshot, error) {
+	user, err := s.getOrCreateUser(telegramID, "Telegram User")
+	if err != nil {
+		return nil, err
+	}
+
+	totalAssets, totalLiabilities, err := s.netWorthRepo.CalculateNetWorth(user.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	netWorth := totalAssets - totalLiabilities
+	snapshot := &models.NetWorthSnapshot{
+		UserID:           user.ID,
+		TotalAssets:      totalAssets,
+		TotalLiabilities: totalLiabilities,
+		NetWorth:         netWorth,
+		SnapshotDate:     time.Now().In(s.loc).Truncate(24 * time.Hour),
+	}
+
+	err = s.netWorthRepo.CreateNetWorthSnapshot(snapshot)
+	if err != nil {
+		return nil, err
+	}
+
+	return snapshot, nil
 }
