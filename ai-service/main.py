@@ -14,6 +14,7 @@ from parser_service import (
     ParsedReceipt,
     ReceiptItem,
     ParsedDebt,
+    ParsedNetWorth,
     normalize_indonesian_currency,
 )
 
@@ -37,6 +38,9 @@ class ParseRequest(BaseModel):
 
 class ParseDebtRequest(BaseModel):
     text: str = Field(..., example="Andi hutang ke saya 200rb buat makan kemarin")
+
+class ParseNetWorthRequest(BaseModel):
+    text: str = Field(..., example="saldo BCA saya 12 juta")
 
 class TransactionItem(BaseModel):
     type: str = Field(..., example="expense")
@@ -67,7 +71,8 @@ def read_root():
             "parse": "/parse",
             "analyze": "/analyze",
             "ocr": "/ocr",
-            "parse-debt": "/parse-debt"
+            "parse-debt": "/parse-debt",
+            "parse-networth": "/parse-networth"
         }
     }
 
@@ -102,6 +107,17 @@ def parse_debt(request: ParseDebtRequest):
         return parsed_result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse debt: {str(e)}")
+
+@app.post("/parse-networth", response_model=ParsedNetWorth)
+def parse_networth(request: ParseNetWorthRequest):
+    if not request.text.strip():
+        raise HTTPException(status_code=400, detail="Text field cannot be empty.")
+
+    try:
+        parsed_result = parser_service.parse_networth(request.text)
+        return parsed_result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse networth: {str(e)}")
 
 @app.post("/analyze", response_model=AnalyzeResponse)
 def analyze_transactions(request: AnalyzeRequest):

@@ -58,11 +58,13 @@ type FinanceService interface {
 	GetNetWorthStatus(telegramID int64) (string, error)
 	GetNetWorthHistory(telegramID int64) (string, error)
 	CreateDailyNetWorthSnapshot(telegramID int64) (*models.NetWorthSnapshot, error)
+	ParseNetWorthText(text string) (*NetWorthParseResponse, error)
 }
 
 type financeService struct {
 	ai             AIClient
 	debtAI         DebtAIClient
+	networthAI     NetWorthAIClient
 	userRepo       repositories.UserRepository
 	txRepo         repositories.TransactionRepository
 	repRepo        repositories.ReportRepository
@@ -78,6 +80,7 @@ type financeService struct {
 func NewFinanceService(
 	ai AIClient,
 	debtAI DebtAIClient,
+	networthAI NetWorthAIClient,
 	userRepo repositories.UserRepository,
 	txRepo repositories.TransactionRepository,
 	repRepo repositories.ReportRepository,
@@ -100,6 +103,7 @@ func NewFinanceService(
 	return &financeService{
 		ai:             ai,
 		debtAI:         debtAI,
+		networthAI:     networthAI,
 		userRepo:       userRepo,
 		txRepo:         txRepo,
 		repRepo:        repRepo,
@@ -1574,4 +1578,8 @@ func (s *financeService) CreateDailyNetWorthSnapshot(telegramID int64) (*models.
 	}
 
 	return snapshot, nil
+}
+
+func (s *financeService) ParseNetWorthText(text string) (*NetWorthParseResponse, error) {
+	return s.networthAI.ParseNetWorth(text)
 }

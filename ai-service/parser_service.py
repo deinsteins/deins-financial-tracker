@@ -105,6 +105,28 @@ class ParsedDebt(BaseModel):
         v = v.strip().lower()
         return v if v in VALID_DEBT_DIRECTIONS else None
 
+VALID_NETWORTH_INTENTS = {
+    "add_asset", "update_asset", "delete_asset",
+    "add_liability", "update_liability", "delete_liability",
+    "show_networth", "unknown"
+}
+
+class ParsedNetWorth(BaseModel):
+    intent: str = Field(..., description="One of: add_asset, update_asset, delete_asset, add_liability, update_liability, delete_liability, show_networth, unknown")
+    type: str | None = Field(..., description="Type of asset (bank, cash, investment, property, other) or liability (loan, credit_card, debt, other), or null if not applicable")
+    name: str | None = Field(..., description="Name of the asset or liability, or null if not applicable")
+    amount: int | None = Field(..., description="Amount as an integer in IDR, or null if not applicable")
+    notes: str | None = Field(..., description="Additional notes or descriptions, or null if not applicable")
+    reason: str | None = Field(..., description="Explanation for why intent is 'unknown'; null for all other intents")
+
+    @field_validator("intent", mode="before")
+    @classmethod
+    def validate_intent(cls, v: str) -> str:
+        if not isinstance(v, str):
+            return "unknown"
+        v = v.strip().lower()
+        return v if v in VALID_NETWORTH_INTENTS else "unknown"
+
 # Pydantic schema for analysis validation
 class AnalyzeResponse(BaseModel):
     summary: str = Field(..., description="Concise paragraph summary of the user financial health and spending patterns in casual Indonesian")
@@ -231,6 +253,102 @@ def resolve_due_date(text: str, reference_date: datetime | None = None) -> str |
             return candidate.strftime("%Y-%m-%d")
 
     return None
+
+def fallback_parse_networth(text: str) -> dict:
+    """
+    Simple rule-based fallback for net worth parsing when no LLM is configured.
+    """
+    normalized = normalize_indonesian_currency(text, support_k=True)
+    lower_text = text.lower()
+    
+    amounts = re.findall(r'\d+', normalized)
+    amount = int(amounts[0]) if amounts else None
+
+    # Try to find a capitalized word for the name (e.g. BCA, Dompet, Saham)
+    candidates = re.findall(r'\b([A-Z][a-zA-Z0-9_]{1,})\b', text)
+    name = None
+    if candidates:
+        name = candidates[0]
+    else:
+        for w in ["dompet", "cash", "saham", "reksa dana", "crypto", "cicilan motor", "motor", "mobil", "rumah"]:
+            if w in lower_text:
+                name = w.title()
+                break
+
+    # Determine intent
+    if any(w in lower_text for w in ["show_networth", "networth", "kekayaan", "net worth"]):
+        return {
+            "intent": "show_networth",
+            "type": None,
+            "name": None,
+            "amount": None,
+            "notes": None,
+            "reason": None
+        }
+
+    is_delete = any(w in lower_text for w in ["hapus", "delete", "buang"])
+    is_update = any(w in lower_text for w in ["update", "ubah", "set", "ganti", "jadi"])
+    is_liability = any(w in lower_text for w in ["cicilan", "hutang", "utang", "pinjaman", "kewajiban", "liability", "liabilities", "credit card", "kartu kredit"])
+
+    intent = "unknown"
+    if is_delete:
+        intent = "delete_liability" if is_liability else "delete_asset"
+    elif is_update:
+        intent = "update_liability" if is_liability else "update_asset"
+    else:
+        if any(w in lower_text for w in ["saldo", "tabungan", "cash", "saham", "investasi", "aset", "asset"]):
+            intent = "add_asset"
+        elif is_liability:
+            intent = "add_liability"
+        else:
+            intent = "add_asset"  # fallback default
+
+    # Determine type
+    item_type = "other"
+    if is_liability:
+        if any(w in lower_text for w in ["kartu kredit", "cc"]):
+            item_type = "credit_card"
+        elif any(w in lower_text for w in ["cicilan", "pinjaman", "loan", "kpr"]):
+            item_type = "loan"
+        else:
+            item_type = "debt"
+    else:
+        if any(w in lower_text for w in ["tabungan", "bank", "bca", "mandiri", "bni", "bri"]):
+            item_type = "bank"
+        elif any(w in lower_text for w in ["cash", "dompet"]):
+            item_type = "cash"
+        elif any(w in lower_text for w in ["saham", "reksa dana", "investasi", "crypto"]):
+            item_type = "investment"
+
+    # Validate required parameters
+    if intent in ["delete_asset", "delete_liability", "update_asset", "update_liability", "add_asset", "add_liability"]:
+        if not name:
+            return {
+                "intent": "unknown",
+                "type": None,
+                "name": None,
+                "amount": None,
+                "notes": None,
+                "reason": "Tidak dapat mengenali nama aset atau kewajiban dari teks."
+            }
+        if intent in ["add_asset", "add_liability", "update_asset", "update_liability"] and amount is None:
+            return {
+                "intent": "unknown",
+                "type": None,
+                "name": name,
+                "amount": None,
+                "notes": None,
+                "reason": "Tidak dapat mendeteksi jumlah uang dari teks."
+            }
+
+    return {
+        "intent": intent,
+        "type": item_type if intent not in ["delete_asset", "delete_liability"] else None,
+        "name": name,
+        "amount": amount,
+        "notes": None,
+        "reason": None
+    }
 
 def fallback_parse_debt(text: str) -> dict:
     """
@@ -767,6 +885,124 @@ Rules:
             result = ParsedDebt(**parsed_data)
             result.due_date = resolve_due_date(text)
             return result
+
+    def parse_networth(self, text: str) -> ParsedNetWorth:
+        preprocessed_text = normalize_indonesian_currency(text, support_k=True)
+        logger.info(f"Parsing net worth text: '{text}' | Preprocessed: '{preprocessed_text}'")
+
+        if not self.is_configured:
+            logger.info("Using local fallback rule-based net worth parser.")
+            parsed_data = fallback_parse_networth(text)
+            return ParsedNetWorth(**parsed_data)
+
+        prompt = f"""
+You are a personal finance assistant parser for an Indonesian personal finance app.
+Parse the following text and extract net worth related intent and details (assets and liabilities).
+
+The input text has been normalized for currency amounts to help you: "{preprocessed_text}"
+
+Supported "intent" values (choose exactly one):
+- "add_asset": a new asset is being recorded (e.g. bank account, cash, investments, properties).
+- "update_asset": updating the value/amount of an existing asset.
+- "delete_asset": deleting/removing an asset.
+- "add_liability": a new liability/debt/loan is being recorded.
+- "update_liability": updating the value/amount of an existing liability.
+- "delete_liability": deleting/removing a liability.
+- "show_networth": user wants to view their net worth status or history.
+- "unknown": you cannot confidently determine the intent, name, or amount.
+
+"type" (optional, null if not applicable):
+- For assets, must be one of: "bank" (for bank accounts/savings), "cash" (cash on hand/wallet), "investment" (stocks, mutual funds, gold, crypto), "property" (real estate, vehicles), or "other".
+- For liabilities, must be one of: "loan" (mortgages, auto loans, personal loans), "credit_card" (credit card debts), "debt" (money owed to other people), or "other".
+
+"name" (optional, null if not applicable):
+- The name of the asset or liability (e.g., "BCA", "Dompet", "Saham", "Cicilan Motor"). Keep it concise.
+
+"amount" (optional, null if not applicable):
+- The amount as an integer in IDR.
+
+"notes" (optional, null if not applicable):
+- Any additional details/notes provided.
+
+"reason" (optional, only populated when intent is "unknown"):
+- Explanation in Indonesian of why the intent is unknown (e.g., "Tidak dapat mendeteksi jumlah uang dari teks.").
+
+Canonical examples (follow these exactly for phrasing patterns):
+
+Example 1:
+Input: "saldo BCA saya 12 juta"
+Output: {{"intent": "add_asset", "type": "bank", "name": "BCA", "amount": 12000000, "notes": null, "reason": null}}
+
+Example 2:
+Input: "cash di dompet 500rb"
+Output: {{"intent": "add_asset", "type": "cash", "name": "Dompet", "amount": 500000, "notes": null, "reason": null}}
+
+Example 3:
+Input: "saham saya sekarang 5 juta"
+Output: {{"intent": "add_asset", "type": "investment", "name": "Saham", "amount": 5000000, "notes": null, "reason": null}}
+
+Example 4:
+Input: "cicilan motor sisa 2 juta"
+Output: {{"intent": "add_liability", "type": "loan", "name": "Cicilan Motor", "amount": 2000000, "notes": null, "reason": null}}
+
+Example 5:
+Input: "update saldo BCA jadi 15 juta"
+Output: {{"intent": "update_asset", "type": "bank", "name": "BCA", "amount": 15000000, "notes": null, "reason": null}}
+
+Example 6:
+Input: "hapus aset BCA"
+Output: {{"intent": "delete_asset", "type": null, "name": "BCA", "amount": null, "notes": null, "reason": null}}
+
+Example 7:
+Input: "tampilkan kekayaan bersih saya"
+Output: {{"intent": "show_networth", "type": null, "name": null, "amount": null, "notes": null, "reason": null}}
+
+Rules:
+- All monetary values MUST be plain integers in IDR (no "Rp", no dots, no commas).
+- If you cannot confidently identify the asset/liability name AND (where applicable) the amount, return intent "unknown" with a populated "reason".
+- Return ONLY the raw JSON object. Do not wrap in markdown tags like ```json.
+"""
+
+        if self.is_custom_llm_configured:
+            try:
+                system_prompt = "You are a personal finance assistant parser."
+                raw_json = self._call_custom_llm(prompt, system_prompt).strip()
+                if raw_json.startswith("```"):
+                    lines = raw_json.split("\n")
+                    if lines[0].startswith("```"):
+                        lines = lines[1:]
+                    if lines[-1].startswith("```"):
+                        lines = lines[:-1]
+                    raw_json = "\n".join(lines).strip()
+
+                logger.info(f"Custom LLM networth raw response: {raw_json}")
+                parsed_data = json.loads(raw_json)
+                return ParsedNetWorth(**parsed_data)
+            except Exception as e:
+                logger.error(f"Custom LLM networth parse failed: {e}. Falling back to rule-based parser.")
+                parsed_data = fallback_parse_networth(text)
+                return ParsedNetWorth(**parsed_data)
+
+        try:
+            model = genai.GenerativeModel(self.model_name)
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    response_mime_type="application/json",
+                    response_schema=clean_gemini_schema(ParsedNetWorth),
+                )
+            )
+
+            raw_json = response.text.strip()
+            logger.info(f"Gemini networth raw response: {raw_json}")
+
+            parsed_data = json.loads(raw_json)
+            return ParsedNetWorth(**parsed_data)
+
+        except Exception as e:
+            logger.error(f"Gemini API networth parse failed: {e}. Falling back to rule-based parser.")
+            parsed_data = fallback_parse_networth(text)
+            return ParsedNetWorth(**parsed_data)
 
     def parse_receipt(self, text: str) -> ParsedReceipt:
         logger.info(f"Parsing receipt text ({len(text)} chars)")
