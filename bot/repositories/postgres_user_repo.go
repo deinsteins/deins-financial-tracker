@@ -25,8 +25,16 @@ func NewPostgresUserRepository(pool *pgxpool.Pool) UserRepository {
 		fmt.Printf("ERROR: failed to alter users table for budget_cycle_start_day: %v\n", err)
 	}
 
+	// Add payday_day column if not exists (applied here so existing prod DBs get it automatically)
+	alterPaydayDDL := `ALTER TABLE users ADD COLUMN IF NOT EXISTS payday_day INTEGER;`
+	_, err = pool.Exec(context.Background(), alterPaydayDDL)
+	if err != nil {
+		fmt.Printf("ERROR: failed to alter users table for payday_day: %v\n", err)
+	}
+
 	return &postgresUserRepository{pool: pool}
 }
+
 
 func (r *postgresUserRepository) Create(user *models.User) error {
 	var query string
