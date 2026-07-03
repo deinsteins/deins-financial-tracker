@@ -37,15 +37,15 @@ func (r *postgresUserRepository) Create(user *models.User) error {
 	}
 
 	if user.ID == "" {
-		query = `INSERT INTO users (telegram_id, full_name, monthly_budget, budget_cycle_start_day) 
-		         VALUES ($1, $2, $3, $4) 
-		         RETURNING id, created_at`
-		err = r.pool.QueryRow(context.Background(), query, user.TelegramID, user.FullName, user.MonthlyBudget, user.BudgetCycleStartDay).Scan(&user.ID, &user.CreatedAt)
-	} else {
-		query = `INSERT INTO users (id, telegram_id, full_name, monthly_budget, budget_cycle_start_day) 
+		query = `INSERT INTO users (telegram_id, full_name, monthly_budget, budget_cycle_start_day, payday_day) 
 		         VALUES ($1, $2, $3, $4, $5) 
+		         RETURNING id, created_at`
+		err = r.pool.QueryRow(context.Background(), query, user.TelegramID, user.FullName, user.MonthlyBudget, user.BudgetCycleStartDay, user.PaydayDay).Scan(&user.ID, &user.CreatedAt)
+	} else {
+		query = `INSERT INTO users (id, telegram_id, full_name, monthly_budget, budget_cycle_start_day, payday_day) 
+		         VALUES ($1, $2, $3, $4, $5, $6) 
 		         RETURNING created_at`
-		err = r.pool.QueryRow(context.Background(), query, user.ID, user.TelegramID, user.FullName, user.MonthlyBudget, user.BudgetCycleStartDay).Scan(&user.CreatedAt)
+		err = r.pool.QueryRow(context.Background(), query, user.ID, user.TelegramID, user.FullName, user.MonthlyBudget, user.BudgetCycleStartDay, user.PaydayDay).Scan(&user.CreatedAt)
 	}
 
 	if err != nil {
@@ -55,7 +55,7 @@ func (r *postgresUserRepository) Create(user *models.User) error {
 }
 
 func (r *postgresUserRepository) GetByTelegramID(telegramID int64) (*models.User, error) {
-	query := `SELECT id, telegram_id, full_name, monthly_budget, budget_cycle_start_day, created_at 
+	query := `SELECT id, telegram_id, full_name, monthly_budget, budget_cycle_start_day, payday_day, created_at 
 	          FROM users 
 	          WHERE telegram_id = $1`
 
@@ -66,6 +66,7 @@ func (r *postgresUserRepository) GetByTelegramID(telegramID int64) (*models.User
 		&user.FullName,
 		&user.MonthlyBudget,
 		&user.BudgetCycleStartDay,
+		&user.PaydayDay,
 		&user.CreatedAt,
 	)
 
@@ -98,7 +99,7 @@ func (r *postgresUserRepository) UpdateCycleStartDay(userID string, startDay int
 }
 
 func (r *postgresUserRepository) GetAllUsers() ([]*models.User, error) {
-	query := `SELECT id, telegram_id, full_name, monthly_budget, budget_cycle_start_day, created_at 
+	query := `SELECT id, telegram_id, full_name, monthly_budget, budget_cycle_start_day, payday_day, created_at 
 	          FROM users`
 	rows, err := r.pool.Query(context.Background(), query)
 	if err != nil {
@@ -115,6 +116,7 @@ func (r *postgresUserRepository) GetAllUsers() ([]*models.User, error) {
 			&user.FullName,
 			&user.MonthlyBudget,
 			&user.BudgetCycleStartDay,
+			&user.PaydayDay,
 			&user.CreatedAt,
 		)
 		if err != nil {
@@ -123,4 +125,13 @@ func (r *postgresUserRepository) GetAllUsers() ([]*models.User, error) {
 		users = append(users, &user)
 	}
 	return users, nil
+}
+
+func (r *postgresUserRepository) UpdatePaydayDay(userID string, paydayDay *int) error {
+	query := `UPDATE users SET payday_day = $1 WHERE id = $2`
+	_, err := r.pool.Exec(context.Background(), query, paydayDay, userID)
+	if err != nil {
+		return fmt.Errorf("postgres_user_repo: failed to update payday day: %w", err)
+	}
+	return nil
 }

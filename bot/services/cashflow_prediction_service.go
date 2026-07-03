@@ -18,6 +18,20 @@ func (s *financeService) PredictCashflow(telegramID int64, targetDate time.Time)
 		return nil, "", err
 	}
 
+	if targetDate.IsZero() {
+		now := time.Now().In(s.loc)
+		if user.PaydayDay != nil {
+			payday := *user.PaydayDay
+			if now.Day() < payday {
+				targetDate = time.Date(now.Year(), now.Month(), payday, 23, 59, 59, 0, s.loc)
+			} else {
+				targetDate = time.Date(now.Year(), now.Month(), payday, 23, 59, 59, 0, s.loc).AddDate(0, 1, 0)
+			}
+		} else {
+			targetDate = time.Date(now.Year(), now.Month(), 1, 23, 59, 59, 0, s.loc).AddDate(0, 1, -1)
+		}
+	}
+
 	// 2. Fetch resources
 	assets, err := s.netWorthRepo.GetAssetsByUser(user.ID)
 	if err != nil {

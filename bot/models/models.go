@@ -10,6 +10,7 @@ type User struct {
 	FullName            string    `json:"full_name"`
 	MonthlyBudget       int64     `json:"monthly_budget"`
 	BudgetCycleStartDay int       `json:"budget_cycle_start_day"`
+	PaydayDay           *int      `json:"payday_day"`
 	CreatedAt           time.Time `json:"created_at"`
 }
 

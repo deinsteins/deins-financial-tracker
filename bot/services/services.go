@@ -61,6 +61,8 @@ type FinanceService interface {
 	ParseNetWorthText(text string) (*NetWorthParseResponse, error)
 	PredictCashflow(telegramID int64, targetDate time.Time) (*models.CashflowPrediction, string, error)
 	AnalyzeCashflowInsight(req CashflowInsightRequest) (*CashflowInsightResponse, error)
+	SetPaydayDay(telegramID int64, day int) (string, error)
+	GetPaydayDay(telegramID int64) (string, error)
 }
 
 type financeService struct {
@@ -1590,4 +1592,30 @@ func (s *financeService) CreateDailyNetWorthSnapshot(telegramID int64) (*models.
 
 func (s *financeService) ParseNetWorthText(text string) (*NetWorthParseResponse, error) {
 	return s.networthAI.ParseNetWorth(text)
+}
+
+func (s *financeService) SetPaydayDay(telegramID int64, day int) (string, error) {
+	if day < 1 || day > 31 {
+		return "⚠️ *Tanggal tidak valid!* Masukkan tanggal antara 1 sampai 31.", nil
+	}
+	user, err := s.getOrCreateUser(telegramID, "Telegram User")
+	if err != nil {
+		return "", err
+	}
+	err = s.userRepo.UpdatePaydayDay(user.ID, &day)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("✅ *Tanggal gajian berhasil disetel!* Tanggal gajian kamu sekarang adalah tanggal *%d* setiap bulannya.", day), nil
+}
+
+func (s *financeService) GetPaydayDay(telegramID int64) (string, error) {
+	user, err := s.getOrCreateUser(telegramID, "Telegram User")
+	if err != nil {
+		return "", err
+	}
+	if user.PaydayDay == nil {
+		return "ℹ️ Kamu belum menyetel tanggal gajian. Gunakan `/payday set <tanggal>` untuk menyetelnya.", nil
+	}
+	return fmt.Sprintf("📅 Tanggal gajian kamu saat ini disetel pada tanggal *%d*.", *user.PaydayDay), nil
 }

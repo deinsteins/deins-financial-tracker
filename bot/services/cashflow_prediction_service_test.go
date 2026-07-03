@@ -151,3 +151,48 @@ func TestPredictCashflow_NoHistory(t *testing.T) {
 		t.Errorf("Expected message to handle no history gracefully: %s", msg)
 	}
 }
+
+func TestPredictCashflow_ZeroDate_Payday(t *testing.T) {
+	loc := time.UTC
+	now := time.Now().UTC().Truncate(24 * time.Hour)
+
+	// Set payday to tomorrow's day
+	tomorrowDay := now.AddDate(0, 0, 1).Day()
+	userRepo := &fakeUserRepo{
+		user: &models.User{
+			ID:         "user-123",
+			TelegramID: 12345,
+			PaydayDay:  &tomorrowDay,
+		},
+	}
+	netWorthRepo := &fakeNetWorthRepo{
+		assets: []*models.Asset{
+			{AssetType: "cash", Amount: 1000000},
+		},
+	}
+	debtRepo := &fakeDebtRepo{}
+	txRepo := &fakeTxRepo{}
+	cashflowRepo := &fakeCashflowRepo{}
+
+	svc := &financeService{
+		userRepo:     userRepo,
+		netWorthRepo: netWorthRepo,
+		debtRepo:     debtRepo,
+		txRepo:       txRepo,
+		cashflowRepo: cashflowRepo,
+		loc:          loc,
+	}
+
+	// zero date target
+	pred, _, err := svc.PredictCashflow(12345, time.Time{})
+	if err != nil {
+		t.Fatalf("PredictCashflow failed: %v", err)
+	}
+
+	// Should resolve target to tomorrow because tomorrow is paydayDay and today (now.Day()) < paydayDay
+	expectedTarget := time.Date(now.Year(), now.Month(), tomorrowDay, 23, 59, 59, 0, loc)
+	if pred.TargetDate.Day() != expectedTarget.Day() || pred.TargetDate.Month() != expectedTarget.Month() {
+		t.Errorf("Expected resolved target date to be payday day %d, got %v", tomorrowDay, pred.TargetDate)
+	}
+}
+

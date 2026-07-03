@@ -212,6 +212,9 @@ func (h *BotHandler) handleCommand(msg *tgbotapi.Message) {
 	case "cashflow":
 		replyText = h.handleCashflowCommand(msg.From.ID, msg.CommandArguments())
 
+	case "payday":
+		replyText = h.handlePaydayCommand(msg.From.ID, msg.CommandArguments())
+
 	default:
 		replyText = "Perintah apaan tuh? Coba cek /start aja biar jelas bro!"
 	}
@@ -1634,8 +1637,8 @@ func (h *BotHandler) handleCashflowCommand(telegramID int64, args string) string
 	var targetDate time.Time
 
 	if args == "" {
-		// predicts until end of current month
-		targetDate = time.Date(now.Year(), now.Month(), 1, 23, 59, 59, 0, loc).AddDate(0, 1, -1)
+		// Zero time, will be resolved in PredictCashflow using user's payday_day or end of month
+		targetDate = time.Time{}
 	} else {
 		parts := strings.Fields(args)
 		if len(parts) == 1 {
@@ -1667,5 +1670,46 @@ func (h *BotHandler) handleCashflowCommand(telegramID int64, args string) string
 		return fmt.Sprintf("⚠️ *Gagal menghitung proyeksi cashflow:*\n%v", err)
 	}
 	return msg
+}
+
+func (h *BotHandler) handlePaydayCommand(telegramID int64, args string) string {
+	args = strings.TrimSpace(args)
+	if args == "" {
+		return "📅 *Panduan Perintah /payday*:\n\n" +
+			"• `/payday set <tanggal>` - Set tanggal gajian bulanan kamu (1-31)\n" +
+			"  _Contoh: `/payday set 25`_\n\n" +
+			"• `/payday show` - Tampilkan tanggal gajian kamu saat ini"
+	}
+
+	parts := strings.Fields(args)
+	subcmd := strings.ToLower(parts[0])
+
+	switch subcmd {
+	case "set":
+		if len(parts) < 2 {
+			return "⚠️ Format salah. Gunakan: `/payday set <tanggal>`\n_Contoh: `/payday set 25`_"
+		}
+		dayStr := parts[1]
+		day, err := strconv.Atoi(dayStr)
+		if err != nil || day < 1 || day > 31 {
+			return "⚠️ Tanggal gajian tidak valid. Harus berupa angka antara 1 sampai 31."
+		}
+
+		reply, err := h.finance.SetPaydayDay(telegramID, day)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Gagal menyetel tanggal gajian: %v", err)
+		}
+		return reply
+
+	case "show":
+		reply, err := h.finance.GetPaydayDay(telegramID)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Gagal mengambil tanggal gajian: %v", err)
+		}
+		return reply
+
+	default:
+		return "⚠️ Perintah tidak dikenal. Gunakan `/payday set <tanggal>` atau `/payday show`."
+	}
 }
 
