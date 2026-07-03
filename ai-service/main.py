@@ -15,6 +15,7 @@ from parser_service import (
     ReceiptItem,
     ParsedDebt,
     ParsedNetWorth,
+    ParsedCashflow,
     CashflowInsightResponse,
     normalize_indonesian_currency,
 )
@@ -42,6 +43,9 @@ class ParseDebtRequest(BaseModel):
 
 class ParseNetWorthRequest(BaseModel):
     text: str = Field(..., example="saldo BCA saya 12 juta")
+
+class ParseCashflowRequest(BaseModel):
+    text: str = Field(..., example="uang saya cukup sampai gajian gak?")
 
 class AnalyzeCashflowRequest(BaseModel):
     available_balance: int = Field(..., example=5200000)
@@ -84,6 +88,7 @@ def read_root():
             "ocr": "/ocr",
             "parse-debt": "/parse-debt",
             "parse-networth": "/parse-networth",
+            "parse-cashflow": "/parse-cashflow",
             "analyze-cashflow": "/analyze-cashflow"
         }
     }
@@ -130,6 +135,18 @@ def parse_networth(request: ParseNetWorthRequest):
         return parsed_result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse networth: {str(e)}")
+
+@app.post("/parse-cashflow", response_model=ParsedCashflow)
+def parse_cashflow(request: ParseCashflowRequest):
+    """Parse natural language cashflow prediction intent from Indonesian text."""
+    if not request.text.strip():
+        raise HTTPException(status_code=400, detail="Text field cannot be empty.")
+
+    try:
+        parsed_result = parser_service.parse_cashflow(request.text)
+        return parsed_result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse cashflow: {str(e)}")
 
 @app.post("/analyze-cashflow", response_model=CashflowInsightResponse)
 def analyze_cashflow(request: AnalyzeCashflowRequest):

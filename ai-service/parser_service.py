@@ -142,6 +142,64 @@ class CashflowInsightResponse(BaseModel):
     summary: str = Field(..., description="Concise cashflow explanation in Indonesian")
     recommendations: list[str] = Field(..., description="List of 3 practical recommendations in Indonesian based on the data")
 
+VALID_CASHFLOW_INTENTS = {"show_cashflow", "set_payday", "unknown"}
+VALID_CASHFLOW_TARGET_TYPES = {"payday", "end_of_month", "days", None}
+
+class ParsedCashflow(BaseModel):
+    intent: str = Field(
+        ...,
+        description="One of: show_cashflow, set_payday, unknown"
+    )
+    target_type: str | None = Field(
+        default=None,
+        description="How the target date is specified: 'payday', 'end_of_month', 'days', or null"
+    )
+    target_days: int | None = Field(
+        default=None,
+        description="Number of days to predict ahead (e.g. 30), only when target_type is 'days'; null otherwise"
+    )
+    payday_day: int | None = Field(
+        default=None,
+        description="Day-of-month of payday (1-31), required for set_payday and when target_type is 'payday'; null otherwise"
+    )
+    resolved_target_date: str | None = Field(
+        default=None,
+        description="ISO 8601 date (YYYY-MM-DD) resolved from the intent when possible; null if not determinable"
+    )
+    reason: str | None = Field(
+        default=None,
+        description="Explanation in Indonesian for why intent is 'unknown'; null for all other intents"
+    )
+
+    @field_validator("intent", mode="before")
+    @classmethod
+    def validate_intent(cls, v: str) -> str:
+        if not isinstance(v, str):
+            return "unknown"
+        v = v.strip().lower()
+        return v if v in VALID_CASHFLOW_INTENTS else "unknown"
+
+    @field_validator("target_type", mode="before")
+    @classmethod
+    def validate_target_type(cls, v) -> str | None:
+        if v is None:
+            return None
+        if not isinstance(v, str):
+            return None
+        v = v.strip().lower()
+        return v if v in {"payday", "end_of_month", "days"} else None
+
+    @field_validator("target_days", "payday_day", mode="before")
+    @classmethod
+    def validate_positive_int(cls, v) -> int | None:
+        if v is None:
+            return None
+        try:
+            n = int(v)
+            return n if n > 0 else None
+        except (TypeError, ValueError):
+            return None
+
 def normalize_indonesian_currency(text: str, support_k: bool = False) -> str:
     """
     Normalizes Indonesian slang currency formats:
@@ -1316,3 +1374,201 @@ Format output:
         except Exception as e:
             logger.error(f"Gemini API cashflow insight failed: {e}. Using fallback.")
             return fallback()
+
+    def parse_cashflow(self, text: str, reference_date: datetime | None = None) -> "ParsedCashflow":
+        """
+        Parses natural language Indonesian text about cashflow prediction requests.
+        Uses Gemini when configured; falls back to rule-based parsing when not.
+        After parsing, resolves resolved_target_date deterministically.
+        """
+        logger.info(f"Parsing cashflow text: '{text}'")
+
+        now = reference_date if reference_date is not None else datetime.now(JAKARTA_TZ)
+
+        # ---- deterministic post-processing: resolve target date ----
+        def resolve_target(parsed_data: dict) -> dict:
+            intent = parsed_data.get("intent")
+            target_type = parsed_data.get("target_type")
+            target_days = parsed_data.get("target_days")
+            payday_day = parsed_data.get("payday_day")
+
+            if intent not in ("show_cashflow", "set_payday"):
+                return parsed_data
+
+            if target_type == "days" and target_days:
+                resolved = now + timedelta(days=int(target_days))
+                parsed_data["resolved_target_date"] = resolved.strftime("%Y-%m-%d")
+
+            elif target_type == "end_of_month":
+                _, last_day = calendar.monthrange(now.year, now.month)
+                resolved = now.replace(day=last_day)
+                parsed_data["resolved_target_date"] = resolved.strftime("%Y-%m-%d")
+
+            elif target_type == "payday" and payday_day:
+                day = int(payday_day)
+                _, days_in_month = calendar.monthrange(now.year, now.month)
+                clamped = min(day, days_in_month)
+                candidate = now.replace(day=clamped)
+                if candidate.date() <= now.date():
+                    # Already passed this month → next month
+                    if now.month == 12:
+                        next_year, next_month = now.year + 1, 1
+                    else:
+                        next_year, next_month = now.year, now.month + 1
+                    _, days_in_next = calendar.monthrange(next_year, next_month)
+                    clamped = min(day, days_in_next)
+                    candidate = candidate.replace(year=next_year, month=next_month, day=clamped)
+                parsed_data["resolved_target_date"] = candidate.strftime("%Y-%m-%d")
+
+            elif intent == "set_payday" and payday_day:
+                # set_payday with no target_type — just confirm the day
+                parsed_data["resolved_target_date"] = None
+
+            return parsed_data
+
+        # ---- rule-based fallback ----
+        def fallback_parse(t: str) -> dict:
+            lower = t.lower()
+
+            # set_payday
+            match = re.search(r'gaj[ia][a-z]*\s+(?:saya\s+)?(?:tanggal|tgl)?\s*(\d{1,2})', lower)
+            if not match:
+                match = re.search(r'tanggal\s+(\d{1,2})\s+(?:gaj[ia]|gaji)', lower)
+            if match:
+                day = int(match.group(1))
+                if 1 <= day <= 31:
+                    return {"intent": "set_payday", "target_type": None, "target_days": None,
+                            "payday_day": day, "resolved_target_date": None, "reason": None}
+
+            # show_cashflow — payday
+            if any(w in lower for w in ["gaji", "gajian", "payday", "sampai gaj"]):
+                return {"intent": "show_cashflow", "target_type": "payday", "target_days": None,
+                        "payday_day": None, "resolved_target_date": None, "reason": None}
+
+            # show_cashflow — N days
+            match = re.search(r'(\d+)\s*hari', lower)
+            if match:
+                days = int(match.group(1))
+                return {"intent": "show_cashflow", "target_type": "days", "target_days": days,
+                        "payday_day": None, "resolved_target_date": None, "reason": None}
+
+            # show_cashflow — end of month
+            if any(w in lower for w in ["akhir bulan", "akhir\nbulan", "end of month", "akhir periode",
+                                         "bulan ini", "saldo akhir"]):
+                return {"intent": "show_cashflow", "target_type": "end_of_month", "target_days": None,
+                        "payday_day": None, "resolved_target_date": None, "reason": None}
+
+            # show_cashflow — generic prediction keywords
+            if any(w in lower for w in ["cashflow", "cash flow", "prediksi", "proyeksi", "cukup",
+                                         "saldo", "uang saya", "keuangan"]):
+                return {"intent": "show_cashflow", "target_type": "end_of_month", "target_days": None,
+                        "payday_day": None, "resolved_target_date": None, "reason": None}
+
+            return {"intent": "unknown", "target_type": None, "target_days": None,
+                    "payday_day": None, "resolved_target_date": None,
+                    "reason": "Tidak dapat mendeteksi maksud dari teks yang diberikan."}
+
+        if not self.is_configured:
+            logger.info("Gemini not configured; using fallback cashflow parser.")
+            parsed_data = fallback_parse(text)
+            parsed_data = resolve_target(parsed_data)
+            return ParsedCashflow(**parsed_data)
+
+        today_str = now.strftime("%Y-%m-%d")
+        prompt = f"""
+Kamu adalah parser intent untuk fitur Proyeksi Cashflow di aplikasi keuangan pribadi berbahasa Indonesia.
+Tanggal referensi hari ini: {today_str}
+
+Parse teks berikut dan ekstrak intent serta detailnya:
+"{text}"
+
+Intent yang valid (pilih tepat satu):
+- "show_cashflow": pengguna ingin melihat proyeksi / prediksi cashflow.
+- "set_payday": pengguna menyebutkan atau mendaftarkan tanggal gajian mereka.
+- "unknown": tidak dapat menentukan intent dengan yakin.
+
+"target_type" (nullable, hanya untuk show_cashflow):
+- "payday": prediksi sampai gajian berikutnya (kata kunci: gajian, gaji, payday).
+- "end_of_month": prediksi sampai akhir bulan ini (kata kunci: akhir bulan, bulan ini, saldo akhir bulan).
+- "days": prediksi N hari ke depan (kata kunci: N hari, N hari ke depan).
+- null: jika tidak ada target spesifik.
+
+"target_days" (integer atau null): jumlah hari ke depan jika target_type adalah "days".
+
+"payday_day" (integer 1-31 atau null): tanggal gajian jika intent adalah "set_payday" atau target_type adalah "payday" dan disebutkan secara eksplisit.
+
+"reason" (string atau null): alasan dalam Bahasa Indonesia jika intent adalah "unknown"; null untuk lainnya.
+
+Contoh canonical:
+1. "uang saya cukup sampai gajian gak?"
+   → {{"intent": "show_cashflow", "target_type": "payday", "target_days": null, "payday_day": null, "reason": null}}
+
+2. "prediksi cashflow 30 hari ke depan"
+   → {{"intent": "show_cashflow", "target_type": "days", "target_days": 30, "payday_day": null, "reason": null}}
+
+3. "gajian saya tanggal 25"
+   → {{"intent": "set_payday", "target_type": null, "target_days": null, "payday_day": 25, "reason": null}}
+
+4. "saldo akhir bulan kira-kira berapa?"
+   → {{"intent": "show_cashflow", "target_type": "end_of_month", "target_days": null, "payday_day": null, "reason": null}}
+
+5. "berapa pengeluaran makan bulan ini?"
+   → {{"intent": "unknown", "target_type": null, "target_days": null, "payday_day": null, "reason": "Pertanyaan tentang pengeluaran kategori, bukan proyeksi cashflow."}}
+
+Aturan:
+- Jangan sertakan field "resolved_target_date" dalam output (akan dihitung secara deterministik).
+- Return ONLY raw JSON. Jangan gunakan markdown.
+"""
+
+        # Try custom LLM first
+        if self.is_custom_llm_configured:
+            try:
+                system_prompt = "Kamu adalah parser intent untuk aplikasi keuangan pribadi."
+                raw_json = self._call_custom_llm(prompt, system_prompt).strip()
+                if raw_json.startswith("```"):
+                    lines = raw_json.split("\n")
+                    if lines[0].startswith("```"):
+                        lines = lines[1:]
+                    if lines[-1].startswith("```"):
+                        lines = lines[:-1]
+                    raw_json = "\n".join(lines).strip()
+                logger.info(f"Custom LLM cashflow parse response: {raw_json}")
+                parsed_data = json.loads(raw_json)
+                parsed_data.setdefault("resolved_target_date", None)
+                parsed_data = resolve_target(parsed_data)
+                return ParsedCashflow(**parsed_data)
+            except Exception as e:
+                logger.error(f"Custom LLM cashflow parse failed: {e}. Using fallback.")
+                parsed_data = fallback_parse(text)
+                parsed_data = resolve_target(parsed_data)
+                return ParsedCashflow(**parsed_data)
+
+        # Gemini path
+        try:
+            # Build a Gemini-compatible schema (exclude resolved_target_date from LLM output)
+            class _GeminiCashflowSchema(BaseModel):
+                intent: str = Field(...)
+                target_type: str | None = Field(default=None)
+                target_days: int | None = Field(default=None)
+                payday_day: int | None = Field(default=None)
+                reason: str | None = Field(default=None)
+
+            model = genai.GenerativeModel(self.model_name)
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    response_mime_type="application/json",
+                    response_schema=clean_gemini_schema(_GeminiCashflowSchema),
+                )
+            )
+            raw_json = response.text.strip()
+            logger.info(f"Gemini cashflow parse response: {raw_json}")
+            parsed_data = json.loads(raw_json)
+            parsed_data.setdefault("resolved_target_date", None)
+            parsed_data = resolve_target(parsed_data)
+            return ParsedCashflow(**parsed_data)
+        except Exception as e:
+            logger.error(f"Gemini cashflow parse failed: {e}. Using fallback.")
+            parsed_data = fallback_parse(text)
+            parsed_data = resolve_target(parsed_data)
+            return ParsedCashflow(**parsed_data)
