@@ -29,9 +29,19 @@ type CashflowInsightResponse struct {
 	Recommendations []string `json:"recommendations"`
 }
 
+type CashflowParseResponse struct {
+	Intent             string  `json:"intent"`
+	TargetType         *string `json:"target_type"`
+	TargetDays         *int    `json:"target_days"`
+	PaydayDay          *int    `json:"payday_day"`
+	ResolvedTargetDate *string `json:"resolved_target_date"`
+	Reason             *string `json:"reason"`
+}
+
 // CashflowAIClient calls the Python AI service to generate cashflow insight.
 type CashflowAIClient interface {
 	AnalyzeCashflow(req CashflowInsightRequest) (*CashflowInsightResponse, error)
+	ParseCashflow(text string) (*CashflowParseResponse, error)
 }
 
 type cashflowAIClient struct {
@@ -105,4 +115,57 @@ func (c *cashflowAIClient) AnalyzeCashflow(req CashflowInsightRequest) (*Cashflo
 
 	log.Printf("[CashflowAIClient] AI insight received: summary len=%d, recs=%d", len(insight.Summary), len(insight.Recommendations))
 	return &insight, nil
+}
+
+func (c *cashflowAIClient) ParseCashflow(text string) (*CashflowParseResponse, error) {
+	if c.serviceURL == "" {
+		return nil, fmt.Errorf("AI service URL not configured")
+	}
+
+	apiURL := fmt.Sprintf("%s/parse-cashflow", c.serviceURL)
+
+	reqBody, err := json.Marshal(map[string]string{"text": text})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewBuffer(reqBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("AI service connection error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		var errData map[string]interface{}
+		_ = json.Unmarshal(body, &errData)
+		if detail, ok := errData["detail"]; ok {
+			return nil, fmt.Errorf("AI service error: %v", detail)
+		}
+		return nil, fmt.Errorf("AI service failed with status %d", resp.StatusCode)
+	}
+
+	var parseResp CashflowParseResponse
+	if err := json.Unmarshal(body, &parseResp); err != nil {
+		return nil, fmt.Errorf("received malformed response from AI Service: %w", err)
+	}
+
+	if parseResp.Intent == "" {
+		return nil, fmt.Errorf("received incomplete response fields from AI Service")
+	}
+
+	return &parseResp, nil
 }

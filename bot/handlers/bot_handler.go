@@ -624,6 +624,10 @@ func (h *BotHandler) handleTextMessage(msg *tgbotapi.Message) {
 		return
 	}
 
+	if h.tryHandleCashflowIntent(msg, textToParse) {
+		return
+	}
+
 	// 1. Fetch conversational history memory context
 	history, err := h.finance.GetChatHistory(msg.From.ID)
 	if err != nil {

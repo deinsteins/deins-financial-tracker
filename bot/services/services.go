@@ -59,6 +59,7 @@ type FinanceService interface {
 	GetNetWorthHistory(telegramID int64) (string, error)
 	CreateDailyNetWorthSnapshot(telegramID int64) (*models.NetWorthSnapshot, error)
 	ParseNetWorthText(text string) (*NetWorthParseResponse, error)
+	ParseCashflowText(text string) (*CashflowParseResponse, error)
 	PredictCashflow(telegramID int64, targetDate time.Time) (*models.CashflowPrediction, string, error)
 	AnalyzeCashflowInsight(req CashflowInsightRequest) (*CashflowInsightResponse, error)
 	SetPaydayDay(telegramID int64, day int) (string, error)
@@ -1592,6 +1593,10 @@ func (s *financeService) CreateDailyNetWorthSnapshot(telegramID int64) (*models.
 
 func (s *financeService) ParseNetWorthText(text string) (*NetWorthParseResponse, error) {
 	return s.networthAI.ParseNetWorth(text)
+}
+
+func (s *financeService) ParseCashflowText(text string) (*CashflowParseResponse, error) {
+	return s.cashflowAI.ParseCashflow(text)
 }
 
 func (s *financeService) SetPaydayDay(telegramID int64, day int) (string, error) {
