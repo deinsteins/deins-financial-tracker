@@ -12,11 +12,12 @@ jobs:
 
     steps:
       - name: SSH Deploy
-        uses: appleboy/ssh-action@v1.0.3
+        uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
+          command_timeout: 30m
           script: |
             # Check if directory exists and is a git repository
             if [ ! -d "/home/ubuntu/finance-bot/.git" ]; then
